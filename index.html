@@ -142,7 +142,7 @@
   .pill.sel-P{background:var(--status-present-soft);border-color:var(--status-present);color:var(--status-present);}
   .pill.sel-A{background:var(--status-absent-soft);border-color:var(--status-absent);color:var(--status-absent);}
   .pill.sel-U{background:var(--status-leave-soft);border-color:var(--status-leave);color:var(--status-leave);}
-  .pill.sel-L{background:var(--status-late-soft);border-color:var(--status-late);color:var(--status-late);}
+  .pill.sel-N{background:var(--status-late-soft);border-color:var(--status-late);color:var(--status-late);}
   .pill.sel-O{background:var(--status-off-soft);border-color:var(--status-off);color:var(--status-off);}
 
   .upload-cell{display:flex;align-items:flex-start;gap:8px;}
@@ -224,7 +224,7 @@
   .cell.st-P{background:var(--status-present);}
   .cell.st-A{background:var(--status-absent);}
   .cell.st-U{background:var(--status-leave);}
-  .cell.st-L{background:var(--status-late);}
+  .cell.st-N{background:var(--status-late);}
   .cell.st-O{background:#DDE1DE;}
   .cell.st-none{background:#F1F2EF;border:1px dashed #DDD;}
 
@@ -281,6 +281,40 @@
     padding:3px 8px;border-radius:6px;background:var(--status-absent-soft);color:var(--status-absent);
     margin:2px 3px 2px 0;overflow-wrap:anywhere;max-width:100%;
   }
+
+  /* ---------- Team Chat ---------- */
+  .chat-wrap{display:flex;height:calc(100vh - 130px);min-height:480px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg-panel);overflow:hidden;}
+  .chat-channels{width:210px;flex-shrink:0;background:#FAFAF8;border-right:1px solid var(--border);display:flex;flex-direction:column;overflow-y:auto;}
+  .chat-channels-group{padding:14px 12px 4px;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;color:var(--ink-faint);}
+  .chat-channel-btn{
+    display:flex;align-items:center;gap:6px;width:calc(100% - 16px);margin:1px 8px;padding:7px 8px;border-radius:6px;
+    border:none;background:none;text-align:left;font-size:13px;color:var(--ink-soft);cursor:pointer;font-family:inherit;
+  }
+  .chat-channel-btn:hover{background:var(--accent-soft);}
+  .chat-channel-btn.active{background:var(--accent);color:#fff;font-weight:600;}
+  .chat-channel-btn .voice-count{margin-left:auto;font-family:'IBM Plex Mono';font-size:10.5px;opacity:0.8;}
+  .chat-new-channel{padding:10px 12px;border-top:1px solid var(--border);margin-top:auto;}
+  .chat-main{flex:1;display:flex;flex-direction:column;min-width:0;}
+  .chat-header{padding:14px 18px;border-bottom:1px solid var(--border);font-family:'Space Grotesk';font-weight:600;font-size:14.5px;display:flex;align-items:center;justify-content:space-between;}
+  .chat-messages{flex:1;overflow-y:auto;padding:14px 18px;display:flex;flex-direction:column;gap:2px;}
+  .chat-msg{display:flex;gap:10px;padding:6px 0;}
+  .chat-msg-avatar{width:30px;height:30px;border-radius:50%;background:var(--accent-soft);color:var(--accent-dark);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;flex-shrink:0;}
+  .chat-msg-name{font-weight:600;font-size:13px;}
+  .chat-msg-time{font-size:10.5px;color:var(--ink-faint);margin-left:7px;font-family:'IBM Plex Mono';}
+  .chat-msg-body{font-size:13.5px;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere;margin-top:2px;}
+  .chat-msg-attach{margin-top:6px;}
+  .chat-msg-attach img{max-width:260px;max-height:220px;border-radius:8px;border:1px solid var(--border);cursor:pointer;}
+  .chat-msg-file{display:inline-flex;align-items:center;gap:6px;padding:7px 11px;border-radius:8px;border:1px solid var(--border);background:#FAFAF8;font-size:12.5px;color:var(--accent);text-decoration:none;}
+  .chat-composer{border-top:1px solid var(--border);padding:12px 16px;display:flex;gap:8px;align-items:flex-end;}
+  .chat-composer textarea{flex:1;resize:none;min-height:38px;max-height:120px;font-family:inherit;font-size:13.5px;padding:9px 11px;border-radius:8px;border:1px solid var(--border);}
+  .chat-attach-btn{flex-shrink:0;padding:9px 11px;border-radius:8px;border:1px solid var(--border);background:#fff;cursor:pointer;font-size:15px;}
+  .voice-room{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:30px;}
+  .voice-participants{display:flex;gap:16px;flex-wrap:wrap;justify-content:center;}
+  .voice-avatar{display:flex;flex-direction:column;align-items:center;gap:8px;}
+  .voice-avatar .circle{width:64px;height:64px;border-radius:50%;background:var(--accent-soft);color:var(--accent-dark);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:20px;border:3px solid transparent;}
+  .voice-avatar.speaking .circle{border-color:var(--status-present);}
+  .voice-avatar .vname{font-size:12px;font-weight:600;}
+  .voice-controls{display:flex;gap:10px;}
   .sev-PME{background:var(--status-late-soft);color:var(--status-late);}
   .sev-DNME{background:var(--status-absent-soft);color:var(--status-absent);}
   .sev-NA{background:var(--status-off-soft);color:var(--status-off);}
@@ -427,11 +461,26 @@ let viewFilter = 'mine';         // 'mine' | 'all' — which interpreters to sho
 let perfInterpreterFilter = '';  // '' = all interpreters, else a specific interpreter id
 let todaySearchQuery = '';       // live search box on Today's Log
 
+// Team Chat state
+let channels = [];
+let currentChannelId = null;
+let messagesCache = {};          // channelId -> [messages]
+let chatMessagesSubscribed = null; // which channel id currently has a live subscription
+const CHAT_BUCKET = 'chat-attachments';
+
+// Voice channel state
+let voiceChannelId = null;       // which voice channel (if any) we're currently in
+let voiceRealtimeChannel = null; // the Supabase Realtime channel used for signaling+presence
+let voicePeers = {};             // peerId -> RTCPeerConnection
+let voiceLocalStream = null;
+let voiceMuted = false;
+let voiceParticipants = {};      // peerId -> {name}
+
 const STATUSES = [
   {code:'P', label:'Present'},
   {code:'A', label:'Absent'},
   {code:'U', label:'Unsure'},
-  {code:'L', label:'Late'},
+  {code:'N', label:'Nonadherence'},
   {code:'O', label:'Off'},
 ];
 const STATUS_MAP = Object.fromEntries(STATUSES.map(s=>[s.code,s]));
@@ -549,7 +598,7 @@ const VIOLATION_CATALOG = [
     { label: 'Closing', severity: true },
     { label: 'Call Readiness', severity: false },
     { label: 'Call Etiquette – Body Language', severity: false },
-    { label: 'Call Etiquette – Professional Voice', severity: false },
+    { label: 'Call Etiquette – Tone of Voice', severity: false },
     { label: 'Call Etiquette – Environmental Condition', severity: false },
     { label: 'Call Handling – Technical Concerns', severity: false },
     { label: 'Call Handling – Hold Time Policy', severity: true },
@@ -571,6 +620,265 @@ const VIOLATION_CATALOG = [
 function catalogItem(category, label){
   const cat = VIOLATION_CATALOG.find(c=>c.category===category);
   return cat ? cat.items.find(i=>i.label===label) : null;
+}
+
+/* ================= QA CSV Import + Crosscheck ================= */
+
+// RFC4180-ish CSV parser — handles quoted fields with embedded commas,
+// newlines, and "" escaped quotes, which the QA export relies on heavily.
+function parseCSV(text){
+  const rows = [];
+  let row = [], field = '', inQuotes = false, i = 0;
+  if(text.charCodeAt(0) === 0xFEFF) text = text.slice(1); // strip BOM
+  while(i < text.length){
+    const c = text[i];
+    if(inQuotes){
+      if(c === '"'){
+        if(text[i+1] === '"'){ field += '"'; i += 2; continue; }
+        inQuotes = false; i++; continue;
+      }
+      field += c; i++; continue;
+    }else{
+      if(c === '"'){ inQuotes = true; i++; continue; }
+      if(c === ','){ row.push(field); field = ''; i++; continue; }
+      if(c === '\r'){ i++; continue; }
+      if(c === '\n'){ row.push(field); rows.push(row); row = []; field = ''; i++; continue; }
+      field += c; i++; continue;
+    }
+  }
+  if(field.length > 0 || row.length > 0){ row.push(field); rows.push(row); }
+  return rows;
+}
+
+// Strips HTML tags/entities from a QA note field down to clean plain text.
+function stripHtmlNote(html){
+  const div = document.createElement('div');
+  div.innerHTML = html
+    .replace(/<\/p>/gi, '\n')
+    .replace(/<br\s*\/?>/gi, '\n');
+  const text = div.textContent || '';
+  return text.replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+// CSV export uses M/D/YY (e.g. "8/3/26"); convert to YYYY-MM-DD.
+function parseCsvDate(s){
+  const parts = (s||'').split('/').map(x=>x.trim());
+  if(parts.length !== 3) return null;
+  const [m,d,y] = parts;
+  const yyyy = y.length === 2 ? '20'+y : y;
+  return `${yyyy}-${pad(Number(m))}-${pad(Number(d))}`;
+}
+
+// Maps the QA export's "Owner Name" column to this board's manager accounts.
+const OWNER_NAME_MAP = {
+  'Amanda Liew VH': 'Amanda',
+  'Henry Zan VH': 'Henry',
+  'Alshiffa Elmozain VH': 'Alshiffa',
+  'Ahmed Helmy VH': 'Helmy',
+  'Nowrus Emad VH': 'Nowrus',
+};
+// Collapses any whitespace variant (double spaces, non-breaking spaces, etc.)
+// and case differences so CSV exports with slightly inconsistent formatting
+// still match correctly.
+function normalizeName(s){
+  return (s||'').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+const OWNER_NAME_MAP_NORMALIZED = Object.fromEntries(
+  Object.entries(OWNER_NAME_MAP).map(([k,v]) => [normalizeName(k), v])
+);
+
+// Maps each CSV violation column to this app's category/item labels. Language
+// Proficiency Score and Accuracy & Completeness Notes are intentionally left
+// out entirely, per instruction.
+const CSV_COLUMN_MAP = [
+  { col: 'Camera Positioning', category: 'Professional Camera Presentation', item: 'Camera Positioning' },
+  { col: 'Camera Presence', category: 'Professional Camera Presentation', item: 'Camera Presence' },
+  { col: 'Introduction', category: 'Customer Service Skills', item: 'Introduction' },
+  { col: 'Call Closing', category: 'Customer Service Skills', item: 'Closing' },
+  { col: 'Call Reainess', category: 'Customer Service Skills', item: 'Call Readiness' },
+  { col: 'Call Etiquette Body Language', category: 'Customer Service Skills', item: 'Call Etiquette – Body Language' },
+  { col: 'Call Ettiquette Environmental Condition', category: 'Customer Service Skills', item: 'Call Etiquette – Environmental Condition' },
+  { col: 'Call Etiquette - Tone of Voice', category: 'Customer Service Skills', item: 'Call Etiquette – Tone of Voice' },
+  { col: 'Call Handling - Technical Issues', category: 'Customer Service Skills', item: 'Call Handling – Technical Concerns' },
+  { col: 'Call Handling - Hold time', category: 'Customer Service Skills', item: 'Call Handling – Hold Time Policy' },
+  { col: 'First Person Interp', category: 'Managing the Session', item: 'First Person Interpretation' },
+  { col: 'Flow Control', category: 'Managing the Session', item: 'Flow Control' },
+  { col: 'Intervention', category: 'Managing the Session', item: 'Intervention Technique' },
+  { col: 'Transparency', category: 'Managing the Session', item: 'Transparency' },
+  { col: 'Clarification Role', category: 'Managing the Session', item: 'Clarification Role' },
+  { col: 'Data Entry', category: 'Data Entry/Collection/Scripting/Documentation', item: 'Data Entry/Collection/Scripting/Documentation' },
+  { col: 'Ethics & Best Practices', category: 'Adherence to Ethical Principles', item: 'Adherence to Ethical Principles' },
+];
+const CSV_NOTE_COLUMNS = ['Professional Camera Presentation Notes', 'Customer Service Skills Notes', 'Managing the Session Notes', 'Code Of Ethics Notes'];
+
+function csvSeverity(status){
+  if(status === 'Partially meets expectations') return 'PME';
+  if(status === 'Does not meet expectations') return 'DNME';
+  return '';
+}
+
+// Two item-sets are "the same" if they contain the same {item, severity}
+// pairs, regardless of order — used to detect whether an existing log matches
+// what the CSV says should be flagged.
+function itemSetsMatch(a, b){
+  if(a.length !== b.length) return false;
+  const norm = arr => arr.map(x=>`${x.item}::${x.severity||''}`).sort();
+  const na = norm(a), nb = norm(b);
+  return na.every((v,i)=> v === nb[i]);
+}
+
+/* ---- Persistent import review queue (unmatched names / mismatches) ---- */
+let importReviewCache = null;
+async function loadImportReview(){
+  if(importReviewCache) return importReviewCache;
+  const r = await storageGet('import-review-log');
+  importReviewCache = r || [];
+  return importReviewCache;
+}
+async function saveImportReview(){
+  await storageSet('import-review-log', importReviewCache || []);
+}
+
+// Processes an uploaded CSV: matches each row's interpreter and manager,
+// checks existing logs for that QAR, and either confirms a match, flags a
+// mismatch for manual review, auto-creates a missing log, or queues unmatched
+// names for review. Never overwrites an existing log automatically.
+async function processImportedCsv(csvText){
+  const rows = parseCSV(csvText);
+  if(rows.length < 2) return { error: 'CSV appears to be empty.' };
+  const header = rows[0];
+  const idx = name => header.indexOf(name);
+  const need = ['Agent Name','Owner Name','QA','Interpretation date'];
+  for(const col of need){
+    if(idx(col) === -1) return { error: `Missing expected column: "${col}". Is this the right file?` };
+  }
+
+  await loadImportReview();
+  const activeRoster = roster; // match against full roster (active + inactive), not just active
+  const summary = { skippedClean: 0, alreadyMatched: 0, autoLogged: 0, mismatched: 0, unmatchedInterpreter: 0, unmatchedManager: 0, errors: 0 };
+
+  for(let r=1; r<rows.length; r++){
+    const row = rows[r];
+    if(row.length < header.length) continue; // skip malformed/blank trailing rows
+    const agentName = (row[idx('Agent Name')]||'').trim();
+    const ownerNameRaw = (row[idx('Owner Name')]||'').trim();
+    const qar = (row[idx('QA')]||'').trim();
+    const date = parseCsvDate(row[idx('Interpretation date')]);
+    if(!agentName || !qar || !date){ summary.errors++; continue; }
+
+    const items = [];
+    CSV_COLUMN_MAP.forEach(m=>{
+      const status = (row[idx(m.col)]||'').trim();
+      if(status && status !== 'Meets expectations'){
+        let severity = csvSeverity(status);
+        const def = catalogItem(m.category, m.item);
+        if(!def || !def.severity) severity = ''; // exempt items: drop severity regardless of CSV
+        items.push({ category: m.category, item: m.item, severity });
+      }
+    });
+    if(items.length === 0){ summary.skippedClean++; continue; }
+
+    const note = CSV_NOTE_COLUMNS.map(col => row[idx(col)]).filter(v=>v && v.trim()).map(stripHtmlNote).join('\n\n');
+
+    const interp = activeRoster.find(p=> normalizeName(p.name) === normalizeName(agentName));
+    const mappedManagerName = OWNER_NAME_MAP_NORMALIZED[normalizeName(ownerNameRaw)] || null;
+    const managerRec = mappedManagerName ? managersList.find(m=> normalizeName(m.name) === normalizeName(mappedManagerName)) : null;
+
+    if(!interp){
+      queueReviewItem({ type:'unmatched-interpreter', qar, date, agentName, ownerNameRaw, items, note });
+      summary.unmatchedInterpreter++;
+      continue;
+    }
+    if(!managerRec){
+      queueReviewItem({ type:'unmatched-manager', qar, date, agentName, ownerNameRaw, interpreterId: interp.id, items, note });
+      summary.unmatchedManager++;
+      continue;
+    }
+
+    await ensureViolationsLoaded(interp.id);
+    const existing = (violationsCache[interp.id]||[]).find(v=> v.qar && v.qar.trim() === qar);
+
+    if(existing){
+      if(itemSetsMatch(existing.items||[], items)){
+        summary.alreadyMatched++;
+      }else{
+        queueReviewItem({ type:'mismatch', qar, date, agentName, ownerNameRaw, interpreterId: interp.id, items, note, existingItems: existing.items||[] });
+        summary.mismatched++;
+      }
+      continue;
+    }
+
+    violationsCache[interp.id].push({
+      id: uid(), date, qar, note, items,
+      loggedBy: managerRec.user_id, createdAt: new Date().toISOString(),
+      autoImported: true
+    });
+    await saveViolations(interp.id);
+    summary.autoLogged++;
+  }
+
+  await saveImportReview();
+  return { summary };
+}
+
+function queueReviewItem(item){
+  // avoid duplicate queue entries across repeated imports of overlapping data
+  const exists = importReviewCache.some(r => r.qar === item.qar && r.type === item.type);
+  if(exists) return;
+  importReviewCache.push({ id: uid(), createdAt: new Date().toISOString(), ...item });
+}
+
+const REVIEW_TYPE_LABEL = {
+  'unmatched-interpreter': 'Unmatched interpreter',
+  'unmatched-manager': 'Unmatched manager',
+  'mismatch': 'Log mismatch',
+};
+
+async function renderImportReviewPanel(){
+  const el = document.getElementById('importReviewPanel');
+  if(!el) return;
+  await loadImportReview();
+  const items = importReviewCache || [];
+  if(items.length === 0){ el.innerHTML = ''; return; }
+
+  el.innerHTML = `
+    <div class="panel" style="margin-bottom:22px;padding:16px 18px;">
+      <div style="font-family:'Space Grotesk';font-size:14px;font-weight:600;margin-bottom:4px;">Import review <span style="color:var(--status-absent);">(${items.length})</span></div>
+      <div class="hint" style="margin-bottom:12px;">These CSV rows couldn't be fully processed automatically. Fix the underlying issue (add the roster/manager, or review the discrepancy) then re-import the same file — already-correct rows are safely skipped. Or dismiss an item here once you've handled it manually.</div>
+      ${items.map(r=>`
+        <div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px;">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;">
+            <div>
+              <span class="sev-badge sev-DNME" style="margin-right:6px;">${escapeHtml(REVIEW_TYPE_LABEL[r.type] || r.type)}</span>
+              <span style="font-family:'IBM Plex Mono';font-size:11.5px;color:var(--ink-soft);">${escapeHtml(r.qar)} · ${escapeHtml(r.date)}</span>
+            </div>
+            <button class="btn btn-sm" data-dismiss-review="${r.id}">Dismiss</button>
+          </div>
+          <div style="font-size:12.5px;margin-top:6px;">
+            ${r.type === 'unmatched-interpreter' ? `CSV agent name <strong>${escapeHtml(r.agentName)}</strong> doesn't match anyone in your roster.` : ''}
+            ${r.type === 'unmatched-manager' ? `CSV owner <strong>${escapeHtml(r.ownerNameRaw)}</strong> (for ${escapeHtml(r.agentName)}) doesn't match any manager account yet.` : ''}
+            ${r.type === 'mismatch' ? `Logged for <strong>${escapeHtml(r.agentName)}</strong> doesn't match the CSV.` : ''}
+          </div>
+          ${r.type === 'mismatch' ? `
+            <div style="font-size:11.5px;margin-top:6px;">
+              <div><strong>CSV says:</strong> ${r.items.map(it=>`${escapeHtml(it.item)}${it.severity?' ('+it.severity+')':''}`).join(', ')}</div>
+              <div><strong>Currently logged:</strong> ${(r.existingItems||[]).map(it=>`${escapeHtml(it.item)}${it.severity?' ('+it.severity+')':''}`).join(', ') || '—'}</div>
+            </div>
+          ` : `
+            <div style="font-size:11.5px;margin-top:6px;color:var(--ink-soft);">Would flag: ${r.items.map(it=>`${escapeHtml(it.item)}${it.severity?' ('+it.severity+')':''}`).join(', ')}</div>
+          `}
+        </div>
+      `).join('')}
+    </div>
+  `;
+
+  document.querySelectorAll('[data-dismiss-review]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      importReviewCache = (importReviewCache||[]).filter(r=>r.id !== btn.dataset.dismissReview);
+      await saveImportReview();
+      renderImportReviewPanel();
+    });
+  });
 }
 
 /* ================= Bulk import ================= */
@@ -667,8 +975,126 @@ async function migrateStatusCodesOnce(){
   }catch(e){ console.error('status code migration failed', e); }
 }
 
+// v2: renames "Late" from code 'L' to code 'N' ("Nonadherence"). Separate,
+// versioned migration so it runs exactly once regardless of whether v1 has
+// already run on this board.
+async function migrateStatusCodesV2Once(){
+  const done = await storageGet('migration:status-codes-v2');
+  if(done) return;
+  try{
+    const { data, error } = await supabaseClient.from('kv_store').select('key,value').like('key', 'attendance:%');
+    if(error){ console.error('status code v2 migration scan failed', error); return; }
+    for(const row of (data || [])){
+      const day = row.value || {};
+      let changed = false;
+      Object.values(day).forEach(entry=>{
+        if(entry && entry.status === 'L'){ entry.status = 'N'; changed = true; }
+      });
+      if(changed){
+        await storageSet(row.key, day);
+        if(attendanceCache[row.key.replace('attendance:','')] !== undefined){
+          attendanceCache[row.key.replace('attendance:','')] = day;
+        }
+      }
+    }
+    await storageSet('migration:status-codes-v2', true);
+  }catch(e){ console.error('status code v2 migration failed', e); }
+}
+
 /* ---- Violations: one key per interpreter holding their full history ---- */
-let violationsCache = {};   // { interpreterId: [ {id, date, category, item, severity, note, loggedBy, createdAt} ] }
+let violationsCache = {};   // { interpreterId: [ {id, date, qar, note, items:[{category,item,severity}], loggedBy, createdAt} ] }
+
+// One-time migration: the violation record shape changed from "one record per
+// flagged item" to "one record per QAR submission, holding an items array".
+// This combines any existing legacy records (which have .category/.item
+// directly, no .items array) that share the same QAR ID for the same
+// interpreter into a single combined record — matching how new submissions
+// already behave. Records with no QAR ID are wrapped individually rather than
+// merged, since there's no shared identity to group them by.
+async function migrateCombineQarLogsOnce(){
+  const done = await storageGet('migration:combine-qar-v1');
+  if(done) return;
+  try{
+    const { data, error } = await supabaseClient.from('kv_store').select('key,value').like('key', 'violations:%');
+    if(error){ console.error('combine-qar migration scan failed', error); return; }
+    for(const row of (data || [])){
+      const records = Array.isArray(row.value) ? row.value : [];
+      if(records.length === 0) continue;
+
+      const alreadyCombined = records.filter(r => r && Array.isArray(r.items));
+      const legacy = records.filter(r => r && !Array.isArray(r.items) && r.category);
+      if(legacy.length === 0) continue; // nothing to migrate for this interpreter
+
+      const groups = {};
+      const solo = [];
+      legacy.forEach(r=>{
+        if(r.qar && r.qar.trim()){
+          const key = r.qar.trim();
+          (groups[key] = groups[key] || []).push(r);
+        }else{
+          solo.push(r);
+        }
+      });
+
+      const merged = [];
+      Object.values(groups).forEach(group=>{
+        group.sort((a,b)=> (a.createdAt||'').localeCompare(b.createdAt||''));
+        const first = group[0];
+        const items = group.map(r=>({ category: r.category, item: r.item, severity: r.severity || '' }));
+        const notes = [...new Set(group.map(r=>r.note).filter(Boolean))];
+        merged.push({
+          id: first.id, date: first.date, qar: first.qar,
+          note: notes.join(' | '),
+          items,
+          loggedBy: first.loggedBy, createdAt: first.createdAt
+        });
+      });
+      solo.forEach(r=>{
+        merged.push({
+          id: r.id, date: r.date, qar: r.qar || '', note: r.note || '',
+          items: [{ category: r.category, item: r.item, severity: r.severity || '' }],
+          loggedBy: r.loggedBy, createdAt: r.createdAt
+        });
+      });
+
+      const finalRecords = [...alreadyCombined, ...merged];
+      await storageSet(row.key, finalRecords);
+      const interpId = row.key.replace('violations:','');
+      if(violationsCache[interpId] !== undefined) violationsCache[interpId] = finalRecords;
+    }
+    await storageSet('migration:combine-qar-v1', true);
+  }catch(e){ console.error('combine-qar migration failed', e); }
+}
+
+// Renames "Call Etiquette – Professional Voice" to "Call Etiquette – Tone of
+// Voice" in every already-stored violation record's items array, matching
+// the catalog rename above so historical data still displays/edits correctly.
+async function migrateToneOfVoiceLabelOnce(){
+  const done = await storageGet('migration:tone-of-voice-v1');
+  if(done) return;
+  try{
+    const { data, error } = await supabaseClient.from('kv_store').select('key,value').like('key', 'violations:%');
+    if(error){ console.error('tone-of-voice migration scan failed', error); return; }
+    const OLD_LABEL = 'Call Etiquette – Professional Voice';
+    const NEW_LABEL = 'Call Etiquette – Tone of Voice';
+    for(const row of (data || [])){
+      const records = Array.isArray(row.value) ? row.value : [];
+      let changed = false;
+      records.forEach(rec=>{
+        (rec.items || []).forEach(it=>{
+          if(it.item === OLD_LABEL){ it.item = NEW_LABEL; changed = true; }
+        });
+      });
+      if(changed){
+        await storageSet(row.key, records);
+        const interpId = row.key.replace('violations:','');
+        if(violationsCache[interpId] !== undefined) violationsCache[interpId] = records;
+      }
+    }
+    await storageSet('migration:tone-of-voice-v1', true);
+  }catch(e){ console.error('tone-of-voice migration failed', e); }
+}
+
 async function ensureViolationsLoaded(interpreterId){
   if(violationsCache[interpreterId] !== undefined) return;
   const r = await storageGet('violations:' + interpreterId);
@@ -698,6 +1124,7 @@ function render(){
         <button class="nav-item ${currentView==='performance'?'active':''}" data-nav="performance"><span class="ic">&#9873;</span> Performance</button>
         <button class="nav-item ${currentView==='roster'?'active':''}" data-nav="roster"><span class="ic">&#128101;</span> Team Roster</button>
         <button class="nav-item ${currentView==='overview'?'active':''}" data-nav="overview"><span class="ic">&#128202;</span> Monthly Overview</button>
+        <button class="nav-item ${currentView==='chat'?'active':''}" data-nav="chat"><span class="ic">&#128172;</span> Team Chat</button>
       </nav>
       <div class="sidebar-foot">
         Signed in as <strong style="color:var(--sidebar-ink);">${escapeHtml(me ? me.name : '')}</strong><br>
@@ -726,6 +1153,7 @@ function refresh(){
   if(currentView === 'today') renderToday(main);
   else if(currentView === 'roster') renderRoster(main);
   else if(currentView === 'performance') renderPerformance(main);
+  else if(currentView === 'chat') renderChat(main);
   else renderOverview(main);
 }
 
@@ -740,7 +1168,7 @@ async function renderToday(main){
   const screenshotValues = active.flatMap(p=>[dayData[p.id]?.brandCheck, dayData[p.id]?.onCall]);
   const signedUrlMap = await getSignedUrls(screenshotValues);
 
-  const counts = {P:0,A:0,U:0,L:0,O:0};
+  const counts = {P:0,A:0,U:0,N:0,O:0};
   active.forEach(p=>{ const s = dayData[p.id]?.status; if(s) counts[s] = (counts[s]||0)+1; });
 
   main.innerHTML = `
@@ -1119,7 +1547,7 @@ async function renderOverview(main){
   const ids = [...idSet].sort((a,b)=> nameOf(a).localeCompare(nameOf(b)));
 
   const stats = {};
-  ids.forEach(id=> stats[id] = {P:0,A:0,U:0,L:0,O:0,total:0});
+  ids.forEach(id=> stats[id] = {P:0,A:0,U:0,N:0,O:0,total:0});
   for(let d=1; d<=lastDay; d++){
     const ds = currentMonth + '-' + pad(d);
     const day = attendanceCache[ds] || {};
@@ -1140,16 +1568,16 @@ async function renderOverview(main){
       <div class="summary-scroll">
       <table class="month-summary">
         <thead><tr>
-          <th>Interpreter</th><th>Present</th><th>Absent</th><th>Unsure</th><th>Late</th><th>Off</th><th>Attendance rate</th>
+          <th>Interpreter</th><th>Present</th><th>Absent</th><th>Unsure</th><th>Nonadherence</th><th>Off</th><th>Attendance rate</th>
         </tr></thead>
         <tbody>
           ${ids.map(id=>{
             const s = stats[id];
             const scheduled = s.total - s.O;
-            const rate = scheduled > 0 ? Math.round(((s.P + s.L) / scheduled) * 100) : 0;
+            const rate = scheduled > 0 ? Math.round(((s.P + s.N) / scheduled) * 100) : 0;
             return `<tr>
               <td>${escapeHtml(nameOf(id))}</td>
-              <td>${s.P}</td><td>${s.A}</td><td>${s.U}</td><td>${s.L}</td><td>${s.O}</td>
+              <td>${s.P}</td><td>${s.A}</td><td>${s.U}</td><td>${s.N}</td><td>${s.O}</td>
               <td><span class="pct-bar"><span style="width:${rate}%"></span></span>${rate}%</td>
             </tr>`;
           }).join('')}
@@ -1196,15 +1624,19 @@ async function renderPerformanceOverviewPanel(ids){
   const itemCounts = {};
   const perInterpreter = {};
   ids.forEach(id=>{
-    const monthEntries = (violationsCache[id]||[]).filter(v=>v.date.slice(0,7)===currentMonth);
-    perInterpreter[id] = monthEntries.length;
-    monthEntries.forEach(v=>{
-      totalFlags++;
-      if(v.severity==='PME') pmeCount++;
-      else if(v.severity==='DNME') dnmeCount++;
-      else plainCount++;
-      itemCounts[v.item] = (itemCounts[v.item]||0) + 1;
+    const monthRecords = (violationsCache[id]||[]).filter(v=>v.date.slice(0,7)===currentMonth);
+    let count = 0;
+    monthRecords.forEach(v=>{
+      (v.items||[]).forEach(it=>{
+        totalFlags++;
+        count++;
+        if(it.severity==='PME') pmeCount++;
+        else if(it.severity==='DNME') dnmeCount++;
+        else plainCount++;
+        itemCounts[it.item] = (itemCounts[it.item]||0) + 1;
+      });
     });
+    perInterpreter[id] = count;
   });
 
   const topItems = Object.entries(itemCounts).sort((a,b)=>b[1]-a[1]).slice(0,4);
@@ -1254,6 +1686,203 @@ async function renderPerformanceOverviewPanel(ids){
       </div>
     </div>
   `;
+}
+
+/* ================= Team Chat UI ================= */
+async function getChatSignedUrls(paths){
+  const unique = [...new Set(paths.filter(Boolean))];
+  const map = {};
+  await Promise.all(unique.map(async p=>{ map[p] = await getChatAttachmentSignedUrl(p); }));
+  return map;
+}
+function chatInitial(name){ return (name||'?').trim().charAt(0).toUpperCase() || '?'; }
+function fmtChatTime(iso){
+  try{ return new Date(iso).toLocaleString(undefined, { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' }); }
+  catch(e){ return ''; }
+}
+
+async function renderChat(main){
+  await loadChannels();
+  await ensureDefaultChannelsOnce();
+  if(channels.length === 0) await loadChannels(); // pick up the just-seeded defaults
+
+  if(!currentChannelId || !channels.some(c=>c.id===currentChannelId)){
+    const lobby = channels.find(c=>c.type==='text');
+    currentChannelId = lobby ? lobby.id : (channels[0] ? channels[0].id : null);
+  }
+  const activeChannel = channels.find(c=>c.id===currentChannelId);
+  const textChannels = channels.filter(c=>c.type==='text');
+  const voiceChannels = channels.filter(c=>c.type==='voice');
+
+  main.innerHTML = `
+    <div class="page-head">
+      <div class="page-title">Team Chat<span class="sub">Channels for your team, plus voice</span></div>
+    </div>
+    <div class="chat-wrap">
+      <div class="chat-channels">
+        <div class="chat-channels-group">Text channels</div>
+        ${textChannels.map(c=>`
+          <button class="chat-channel-btn ${c.id===currentChannelId?'active':''}" data-channel="${c.id}">#&nbsp;${escapeHtml(c.name)}</button>
+        `).join('')}
+        <div class="chat-channels-group">Voice channels</div>
+        ${voiceChannels.map(c=>`
+          <button class="chat-channel-btn ${c.id===currentChannelId?'active':''}" data-channel="${c.id}">&#128266;&nbsp;${escapeHtml(c.name)}${c.id===voiceChannelId ? ` <span class="voice-count">·&nbsp;in call</span>` : ''}</button>
+        `).join('')}
+        <div class="chat-new-channel">
+          <div class="upload-actions" style="flex-direction:column;align-items:stretch;gap:6px;">
+            <input type="text" id="newChannelName" placeholder="New channel name" style="font-size:12.5px;padding:7px 9px;border-radius:6px;border:1px solid var(--border);">
+            <select id="newChannelType" style="font-size:12.5px;padding:7px 9px;border-radius:6px;border:1px solid var(--border);">
+              <option value="text">Text</option>
+              <option value="voice">Voice</option>
+            </select>
+            <button class="btn btn-sm btn-primary" id="createChannelBtn" style="justify-content:center;">+ Create</button>
+          </div>
+        </div>
+      </div>
+      <div class="chat-main" id="chatMain"></div>
+    </div>
+  `;
+
+  document.querySelectorAll('[data-channel]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{ currentChannelId = btn.dataset.channel; refresh(); });
+  });
+  document.getElementById('createChannelBtn').addEventListener('click', async ()=>{
+    const name = document.getElementById('newChannelName').value.trim();
+    const type = document.getElementById('newChannelType').value;
+    if(!name){ showToast('Enter a channel name'); return; }
+    const ok = await createChannel(name, type);
+    if(ok){ showToast('Channel created'); refresh(); }
+  });
+
+  if(!activeChannel){
+    document.getElementById('chatMain').innerHTML = `<div class="empty-state"><div class="big">No channels yet</div></div>`;
+    return;
+  }
+
+  if(activeChannel.type === 'voice'){
+    renderVoiceRoom();
+  }else{
+    await loadMessages(activeChannel.id);
+    subscribeToChannelMessages(activeChannel.id);
+    await renderChatMessages(true);
+  }
+}
+
+async function renderChatMessages(isInitial){
+  const el = document.getElementById('chatMain');
+  if(!el) return;
+  const channel = channels.find(c=>c.id===currentChannelId);
+  if(!channel) return;
+  const msgs = messagesCache[currentChannelId] || [];
+  const signedUrls = await getChatSignedUrls(msgs.map(m=>m.attachment_path));
+
+  el.innerHTML = `
+    <div class="chat-header">#&nbsp;${escapeHtml(channel.name)}${!channel.is_fixed ? `<button class="btn btn-sm btn-danger" id="deleteChannelBtn">Delete channel</button>` : ''}</div>
+    <div class="chat-messages" id="chatMessagesList">
+      ${msgs.length === 0 ? `<div class="hint" style="padding:20px;">No messages yet — say hello.</div>` : msgs.map(m=>{
+        const name = managerName(m.user_id);
+        const isImage = m.attachment_type && m.attachment_type.startsWith('image/');
+        const url = signedUrls[m.attachment_path];
+        return `
+        <div class="chat-msg">
+          <div class="chat-msg-avatar">${escapeHtml(chatInitial(name))}</div>
+          <div style="min-width:0;flex:1;">
+            <span class="chat-msg-name">${escapeHtml(name)}</span><span class="chat-msg-time">${fmtChatTime(m.created_at)}</span>
+            ${m.body ? `<div class="chat-msg-body">${escapeHtml(m.body)}</div>` : ''}
+            ${m.attachment_path ? `
+              <div class="chat-msg-attach">
+                ${isImage
+                  ? (url ? `<img src="${url}" data-view-img="${url}">` : `<div class="hint">Image unavailable</div>`)
+                  : `<a class="chat-msg-file" href="${url||'#'}" target="_blank" rel="noopener">&#128206; ${escapeHtml(m.attachment_name||'file')}</a>`}
+              </div>` : ''}
+          </div>
+        </div>`;
+      }).join('')}
+    </div>
+    <div class="chat-composer">
+      <label class="chat-attach-btn" title="Attach a file or image">&#128206;<input type="file" id="chatFileInput" style="display:none;"></label>
+      <textarea id="chatBodyInput" placeholder="Message #${escapeHtml(channel.name)}" rows="1"></textarea>
+      <button class="btn btn-primary" id="chatSendBtn">Send</button>
+    </div>
+  `;
+
+  const list = document.getElementById('chatMessagesList');
+  if(list) list.scrollTop = list.scrollHeight;
+
+  const delBtn = document.getElementById('deleteChannelBtn');
+  if(delBtn){
+    delBtn.addEventListener('click', async ()=>{
+      if(!confirm(`Delete #${channel.name}? This deletes all its messages too.`)) return;
+      const ok = await deleteChannelById(channel.id);
+      if(ok){ currentChannelId = null; refresh(); }
+    });
+  }
+
+  document.querySelectorAll('[data-view-img]').forEach(img=>{
+    img.addEventListener('click', ()=> openImageModal(img.dataset.viewImg));
+  });
+
+  const send = async ()=>{
+    const body = document.getElementById('chatBodyInput').value;
+    const file = document.getElementById('chatFileInput').files[0];
+    if(!body.trim() && !file) return;
+    document.getElementById('chatSendBtn').disabled = true;
+    const ok = await sendChatMessage(currentChannelId, body, file);
+    if(ok){
+      document.getElementById('chatBodyInput').value = '';
+      document.getElementById('chatFileInput').value = '';
+    }else{
+      document.getElementById('chatSendBtn').disabled = false;
+    }
+  };
+  document.getElementById('chatSendBtn').addEventListener('click', send);
+  document.getElementById('chatBodyInput').addEventListener('keydown', e=>{
+    if(e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); send(); }
+  });
+}
+
+function renderVoiceRoom(){
+  const el = document.getElementById('chatMain');
+  if(!el) return;
+  const channel = channels.find(c=>c.id===currentChannelId);
+  if(!channel) return;
+  const inThisRoom = voiceChannelId === channel.id;
+  const participantIds = Object.keys(voiceParticipants);
+
+  el.innerHTML = `
+    <div class="chat-header">&#128266;&nbsp;${escapeHtml(channel.name)}${!channel.is_fixed ? `<button class="btn btn-sm btn-danger" id="deleteChannelBtn">Delete channel</button>` : ''}</div>
+    <div class="voice-room">
+      <div class="voice-participants">
+        ${inThisRoom && participantIds.length ? participantIds.map(id=>`
+          <div class="voice-avatar"><div class="circle">${escapeHtml(chatInitial(voiceParticipants[id].name))}</div><div class="vname">${escapeHtml(voiceParticipants[id].name)}${id===currentManagerId?' (you)':''}</div></div>
+        `).join('') : `<div class="hint">${inThisRoom ? "You're the only one here right now." : 'Nobody in this call yet.'}</div>`}
+      </div>
+      <div class="voice-controls">
+        ${inThisRoom ? `
+          <button class="btn ${voiceMuted?'btn-danger':''}" id="voiceMuteBtn">${voiceMuted ? '&#128263; Unmute' : '&#127908; Mute'}</button>
+          <button class="btn btn-danger" id="voiceLeaveBtn">Leave call</button>
+        ` : `<button class="btn btn-primary" id="voiceJoinBtn">Join voice</button>`}
+      </div>
+      <div class="hint" style="max-width:360px;text-align:center;">Free peer-to-peer audio — best for small calls. If someone's on a very restrictive network, they may occasionally have trouble connecting.</div>
+    </div>
+  `;
+
+  const delBtn = document.getElementById('deleteChannelBtn');
+  if(delBtn){
+    delBtn.addEventListener('click', async ()=>{
+      if(!confirm(`Delete voice channel "${channel.name}"?`)) return;
+      if(voiceChannelId === channel.id) await leaveVoiceChannel();
+      const ok = await deleteChannelById(channel.id);
+      if(ok){ currentChannelId = null; refresh(); }
+    });
+  }
+
+  const joinBtn = document.getElementById('voiceJoinBtn');
+  if(joinBtn) joinBtn.addEventListener('click', async ()=>{ await joinVoiceChannel(channel.id); refresh(); });
+  const leaveBtn = document.getElementById('voiceLeaveBtn');
+  if(leaveBtn) leaveBtn.addEventListener('click', async ()=>{ await leaveVoiceChannel(); refresh(); });
+  const muteBtn = document.getElementById('voiceMuteBtn');
+  if(muteBtn) muteBtn.addEventListener('click', ()=>{ toggleVoiceMute(); refresh(); });
 }
 
 function exportMonthCsv(){
@@ -1327,8 +1956,13 @@ async function renderPerformance(main){
       <div class="date-nav">
         <input type="month" id="perfMonthPick" value="${currentMonth}">
         <button class="btn btn-sm" id="perfExportCsv">Export CSV</button>
+        <label class="btn btn-sm btn-primary" style="cursor:pointer;">Import QA CSV
+          <input type="file" id="perfImportCsv" accept=".csv" style="display:none;">
+        </label>
       </div>
     </div>
+
+    <div id="importReviewPanel"></div>
 
     <div class="date-nav" style="margin-bottom:16px;">
       <button class="btn btn-sm ${viewFilter==='mine'?'btn-primary':''}" data-filter="mine">My team</button>
@@ -1385,10 +2019,30 @@ async function renderPerformance(main){
 
   document.getElementById('perfMonthPick').addEventListener('change', e=>{ currentMonth = e.target.value; refresh(); });
   document.getElementById('perfExportCsv').addEventListener('click', exportPerformanceCsv);
+  document.getElementById('perfImportCsv').addEventListener('change', async (e)=>{
+    const file = e.target.files[0];
+    if(!file) return;
+    showToast('Reading CSV…');
+    try{
+      const text = await file.text();
+      showToast('Crosschecking against logs…');
+      const result = await processImportedCsv(text);
+      if(result.error){ showToast(result.error); return; }
+      const s = result.summary;
+      showToast(`Imported: ${s.autoLogged} logged, ${s.alreadyMatched} already correct, ${s.mismatched + s.unmatchedInterpreter + s.unmatchedManager} need review`);
+      refresh();
+    }catch(err){
+      console.error('CSV import failed', err);
+      showToast('Import failed — check console for details');
+    }
+    e.target.value = '';
+  });
   document.querySelectorAll('[data-filter]').forEach(btn=>{
     btn.addEventListener('click', ()=>{ viewFilter = btn.dataset.filter; refresh(); });
   });
   document.getElementById('perfInterpFilter').addEventListener('change', e=>{ perfInterpreterFilter = e.target.value; refresh(); });
+
+  await renderImportReviewPanel();
 
   if(scope.length > 0){
     // enable each item's severity picker only once its checkbox is checked
@@ -1426,12 +2080,10 @@ async function renderPerformance(main){
       if(missingSeverity){ showToast('Pick a severity (PME or DNME) for each checked item that needs one'); return; }
 
       await ensureViolationsLoaded(interpId);
-      const createdAt = new Date().toISOString();
-      toFlag.forEach(f=>{
-        violationsCache[interpId].push({
-          id: uid(), date, qar, category: f.category, item: f.item, severity: f.severity, note,
-          loggedBy: currentManagerId, createdAt
-        });
+      violationsCache[interpId].push({
+        id: uid(), date, qar, note,
+        items: toFlag, // [{category, item, severity}] — one QAR, one log entry, however many violations
+        loggedBy: currentManagerId, createdAt: new Date().toISOString()
       });
       const ok = await saveViolations(interpId);
       if(ok){ showToast(`Flagged ${toFlag.length} violation${toFlag.length>1?'s':''}`); refresh(); }
@@ -1449,30 +2101,46 @@ function renderPerformanceBody(scope){
 
   // Monthly + all-time counts per interpreter, broken down by the specific
   // violation item flagged (not just its broad category) — e.g. "Transparency ×1".
+  // Counts individual violations (items), not QAR submissions (records), since
+  // one submission can hold several.
   const stats = {};
   filteredScope.forEach(p=>{
     const all = violationsCache[p.id] || [];
-    const monthEntries = all.filter(v=>v.date.slice(0,7) === currentMonth);
+    const monthRecords = all.filter(v=>v.date.slice(0,7) === currentMonth);
     const byItem = {};
-    monthEntries.forEach(v=>{ byItem[v.item] = (byItem[v.item]||0) + 1; });
-    stats[p.id] = { total: all.length, thisMonth: monthEntries.length, byItem };
+    let monthItemCount = 0, allItemCount = 0;
+    all.forEach(v=> allItemCount += (v.items||[]).length);
+    monthRecords.forEach(v=>{
+      (v.items||[]).forEach(it=>{
+        byItem[it.item] = (byItem[it.item]||0) + 1;
+        monthItemCount++;
+      });
+    });
+    stats[p.id] = { total: allItemCount, thisMonth: monthItemCount, byItem };
   });
 
-  // Flat list of this month's entries across the filtered scope, most recent first.
+  // Flat list of this month's QAR records across the filtered scope, most recent first.
   const monthLog = [];
   filteredScope.forEach(p=>{
     (violationsCache[p.id]||[]).filter(v=>v.date.slice(0,7)===currentMonth).forEach(v=>{
       monthLog.push({ interpreterId: p.id, ...v });
     });
   });
-  monthLog.sort((a,b)=> b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
+  monthLog.sort((a,b)=> b.date.localeCompare(a.date) || (a.createdAt||'').localeCompare(b.createdAt||''));
 
   if(filteredScope.length === 0){
     body.innerHTML = `<div class="panel"><div class="empty-state"><div class="big">No interpreter selected</div><div>Pick a different interpreter, or choose "All interpreters" above.</div></div></div>`;
     return;
   }
 
+  const monthLogTotalItems = monthLog.reduce((sum,v)=> sum + (v.items||[]).length, 0);
+
   body.innerHTML = `
+    <div class="stat-row" style="margin-bottom:20px;">
+      <div class="stat-chip"><div class="n">${monthLog.length}</div><div class="l">Logs this month</div></div>
+      <div class="stat-chip"><div class="n">${monthLogTotalItems}</div><div class="l">Violations flagged</div></div>
+    </div>
+
     <div class="panel" style="margin-bottom:22px;">
       <div class="summary-scroll">
       <table class="month-summary violation-summary">
@@ -1508,8 +2176,7 @@ function renderPerformanceBody(scope){
           <th style="width:110px">Date</th>
           <th style="width:130px">QAR ID</th>
           <th style="width:150px">Interpreter</th>
-          <th style="width:300px">Violation</th>
-          <th style="width:110px">Severity</th>
+          <th style="width:340px">Violation(s)</th>
           <th>Note</th>
           <th style="width:60px"></th>
         </tr></thead>
@@ -1518,18 +2185,21 @@ function renderPerformanceBody(scope){
             <tr data-vid="${v.id}" data-pid="${v.interpreterId}">
               <td><input type="date" class="note-input" data-vfield="date" value="${v.date}"></td>
               <td><input type="text" class="note-input qar-tag" data-vfield="qar" value="${escapeAttr(v.qar||'')}" placeholder="QAR ID"></td>
-              <td>${escapeHtml(nameOf(v.interpreterId))}<div class="interp-role">by ${escapeHtml(managerName(v.loggedBy))}</div></td>
+              <td>${escapeHtml(nameOf(v.interpreterId))}<div class="interp-role">by ${escapeHtml(managerName(v.loggedBy))}</div>${v.autoImported ? `<div class="interp-role" style="color:var(--status-late);">auto-imported</div>` : ''}</td>
               <td>
-                <select class="note-input" data-vfield="category" data-vcatfor="${v.id}">${violationOptionsHtml(v.category)}</select>
-                <select class="note-input" data-vfield="item" data-vitemfor="${v.id}" style="margin-top:4px;">${itemOptionsHtml(v.category, v.item)}</select>
-              </td>
-              <td>
-                <select class="note-input" data-vfield="severity" data-vsevfor="${v.id}" ${catalogItem(v.category, v.item)?.severity ? '' : 'style="display:none;"'}>
-                  <option value="">—</option>
-                  <option value="PME" ${v.severity==='PME'?'selected':''}>PME</option>
-                  <option value="DNME" ${v.severity==='DNME'?'selected':''}>DNME</option>
-                </select>
-                ${!catalogItem(v.category, v.item)?.severity ? severityBadge('') : ''}
+                ${(v.items||[]).map((it,idx)=>`
+                  <div class="qar-item-row" data-item-idx="${idx}" style="display:flex;align-items:center;gap:5px;margin-bottom:6px;flex-wrap:wrap;">
+                    <select class="note-input" data-vfield="category" style="min-width:140px;">${violationOptionsHtml(it.category)}</select>
+                    <select class="note-input" data-vfield="item" style="min-width:140px;">${itemOptionsHtml(it.category, it.item)}</select>
+                    <select class="note-input" data-vfield="severity" style="width:90px;${catalogItem(it.category, it.item)?.severity ? '' : 'display:none;'}">
+                      <option value="">—</option>
+                      <option value="PME" ${it.severity==='PME'?'selected':''}>PME</option>
+                      <option value="DNME" ${it.severity==='DNME'?'selected':''}>DNME</option>
+                    </select>
+                    ${!catalogItem(it.category, it.item)?.severity ? severityBadge('') : ''}
+                    ${(v.items||[]).length > 1 ? `<button type="button" class="btn btn-sm btn-danger" data-item-remove title="Remove this violation">×</button>` : ''}
+                  </div>
+                `).join('')}
               </td>
               <td><input type="text" class="note-input" data-vfield="note" value="${escapeAttr(v.note||'')}" placeholder="Note…"></td>
               <td><button class="btn btn-sm btn-danger" data-vdelete="${v.id}" data-vpid="${v.interpreterId}">Del</button></td>
@@ -1540,41 +2210,64 @@ function renderPerformanceBody(scope){
     </div>
   `;
 
-  // wire per-row category/item/severity linkage + autosave on edit
+  // wire per-row date/qar/note + per-item category/item/severity/remove
   document.querySelectorAll('[data-vid]').forEach(row=>{
     const vid = row.dataset.vid, pid = row.dataset.pid;
-    const catSel = row.querySelector('[data-vfield="category"]');
-    const itemSel = row.querySelector('[data-vfield="item"]');
-    const sevSel = row.querySelector('[data-vfield="severity"]');
     const dateInp = row.querySelector('[data-vfield="date"]');
     const qarInp = row.querySelector('[data-vfield="qar"]');
     const noteInp = row.querySelector('[data-vfield="note"]');
 
     const findRecord = ()=> (violationsCache[pid]||[]).find(x=>x.id===vid);
 
-    if(catSel && itemSel && sevSel) wireCatItemSev(catSel, itemSel, sevSel);
-
-    const persist = async ()=>{
+    const persistHeader = async ()=>{
       const rec = findRecord();
       if(!rec) return;
       rec.date = dateInp.value || rec.date;
       rec.qar = qarInp.value.trim();
-      rec.category = catSel.value;
-      rec.item = itemSel.value;
-      const def = catalogItem(rec.category, rec.item);
-      rec.severity = def && def.severity ? sevSel.value : '';
       rec.note = noteInp.value.trim();
       await saveViolations(pid);
     };
-    [catSel, itemSel, sevSel, dateInp].forEach(el=> el && el.addEventListener('change', async ()=>{ await persist(); refresh(); }));
-    noteInp.addEventListener('change', persist);
-    qarInp.addEventListener('change', persist);
+    dateInp.addEventListener('change', async ()=>{ await persistHeader(); refresh(); });
+    qarInp.addEventListener('change', persistHeader);
+    noteInp.addEventListener('change', persistHeader);
+
+    row.querySelectorAll('.qar-item-row').forEach(itemRow=>{
+      const idx = Number(itemRow.dataset.itemIdx);
+      const catSel = itemRow.querySelector('[data-vfield="category"]');
+      const itemSel = itemRow.querySelector('[data-vfield="item"]');
+      const sevSel = itemRow.querySelector('[data-vfield="severity"]');
+      const removeBtn = itemRow.querySelector('[data-item-remove]');
+
+      wireCatItemSev(catSel, itemSel, sevSel);
+
+      const persistItem = async ()=>{
+        const rec = findRecord();
+        if(!rec || !rec.items[idx]) return;
+        rec.items[idx].category = catSel.value;
+        rec.items[idx].item = itemSel.value;
+        const def = catalogItem(rec.items[idx].category, rec.items[idx].item);
+        rec.items[idx].severity = def && def.severity ? sevSel.value : '';
+        await saveViolations(pid);
+      };
+      [catSel, itemSel, sevSel].forEach(el=> el.addEventListener('change', async ()=>{ await persistItem(); refresh(); }));
+
+      if(removeBtn){
+        removeBtn.addEventListener('click', async ()=>{
+          const rec = findRecord();
+          if(!rec) return;
+          if(!confirm('Remove this violation from the log?')) return;
+          rec.items.splice(idx, 1);
+          await saveViolations(pid);
+          refresh();
+        });
+      }
+    });
   });
 
   document.querySelectorAll('[data-vdelete]').forEach(btn=>{
     btn.addEventListener('click', async ()=>{
       const pid = btn.dataset.vpid, vid = btn.dataset.vdelete;
-      if(!confirm('Delete this flag? This cannot be undone.')) return;
+      if(!confirm('Delete this entire log entry (all violations under this QAR)? This cannot be undone.')) return;
       violationsCache[pid] = (violationsCache[pid]||[]).filter(x=>x.id!==vid);
       await saveViolations(pid);
       refresh();
@@ -1590,7 +2283,9 @@ function exportPerformanceCsv(){
     const rows = [['Date','QAR ID','Interpreter','Category','Item','Severity','Note','Logged by']];
     filteredScope.forEach(p=>{
       (violationsCache[p.id]||[]).filter(v=>v.date.slice(0,7)===currentMonth).forEach(v=>{
-        rows.push([v.date, v.qar||'', p.name, v.category, v.item, v.severity||'', v.note||'', managerName(v.loggedBy)]);
+        (v.items||[]).forEach(it=>{
+          rows.push([v.date, v.qar||'', p.name, it.category, it.item, it.severity||'', v.note||'', managerName(v.loggedBy)]);
+        });
       });
     });
     const csv = rows.map(r=>r.map(val=>`"${String(val).replace(/"/g,'""')}"`).join(',')).join('\n');
@@ -1616,6 +2311,229 @@ function escapeHtml(s){
   return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 function escapeAttr(s){ return escapeHtml(s); }
+
+/* ================= Team Chat: channels ================= */
+async function loadChannels(){
+  const { data, error } = await supabaseClient.from('channels').select('*').order('created_at');
+  channels = error ? [] : (data || []);
+}
+async function ensureDefaultChannelsOnce(){
+  const done = await storageGet('migration:default-channels-v1');
+  if(done) return;
+  const { count } = await supabaseClient.from('channels').select('*', { count:'exact', head:true });
+  if(!count || count === 0){
+    await supabaseClient.from('channels').insert([
+      { name: 'Lobby', type: 'text', is_fixed: true, created_by: currentManagerId },
+      { name: 'General Voice', type: 'voice', is_fixed: true, created_by: currentManagerId },
+    ]);
+  }
+  await storageSet('migration:default-channels-v1', true);
+}
+async function createChannel(name, type){
+  const { error } = await supabaseClient.from('channels').insert({ name, type, is_fixed:false, created_by: currentManagerId });
+  if(error){ console.error('create channel failed', error); showToast('Could not create channel'); return false; }
+  return true;
+}
+async function deleteChannelById(id){
+  const { error } = await supabaseClient.from('channels').delete().eq('id', id);
+  if(error){ console.error('delete channel failed', error); showToast('Could not delete channel (fixed channels can\'t be removed)'); return false; }
+  return true;
+}
+
+/* ================= Team Chat: text messages ================= */
+let chatMsgRTChannel = null;
+async function loadMessages(channelId){
+  const { data, error } = await supabaseClient.from('messages').select('*').eq('channel_id', channelId).order('created_at');
+  messagesCache[channelId] = error ? [] : (data || []);
+}
+function subscribeToChannelMessages(channelId){
+  if(chatMessagesSubscribed === channelId) return;
+  if(chatMessagesSubscribed){ supabaseClient.removeChannel(chatMsgRTChannel); chatMsgRTChannel = null; }
+  chatMessagesSubscribed = channelId;
+  chatMsgRTChannel = supabaseClient
+    .channel('messages_' + channelId)
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `channel_id=eq.${channelId}` }, (payload)=>{
+      if(!messagesCache[channelId]) messagesCache[channelId] = [];
+      if(!messagesCache[channelId].some(m=>m.id === payload.new.id)) messagesCache[channelId].push(payload.new);
+      if(currentView === 'chat' && currentChannelId === channelId) renderChatMessages();
+    })
+    .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'messages', filter: `channel_id=eq.${channelId}` }, (payload)=>{
+      if(messagesCache[channelId]) messagesCache[channelId] = messagesCache[channelId].filter(m=>m.id !== payload.old.id);
+      if(currentView === 'chat' && currentChannelId === channelId) renderChatMessages();
+    })
+    .subscribe();
+}
+
+async function uploadChatAttachment(file){
+  try{
+    let blob = file;
+    if(file.type.startsWith('image/')){ blob = await compressForStorage(file); }
+    if(blob.size > 10*1024*1024){ showToast('File too large (10MB max)'); return null; }
+    const ext = file.name.includes('.') ? '.' + file.name.split('.').pop() : '';
+    const path = `${currentChannelId}/${Date.now()}_${Math.random().toString(36).slice(2,8)}${ext}`;
+    const { error } = await supabaseClient.storage.from(CHAT_BUCKET).upload(path, blob, { contentType: blob.type || file.type, upsert:false });
+    if(error){ console.error('attachment upload failed', error); return null; }
+    return path;
+  }catch(e){ console.error('attachment upload failed', e); return null; }
+}
+async function getChatAttachmentSignedUrl(path){
+  if(!path) return null;
+  try{
+    const { data, error } = await supabaseClient.storage.from(CHAT_BUCKET).createSignedUrl(path, 3600);
+    if(error){ console.error('signed url failed', error); return null; }
+    return data?.signedUrl || null;
+  }catch(e){ return null; }
+}
+
+async function sendChatMessage(channelId, body, file){
+  let attachment_path = null, attachment_name = null, attachment_type = null;
+  if(file){
+    attachment_path = await uploadChatAttachment(file);
+    if(!attachment_path){ showToast('Attachment upload failed'); return false; }
+    attachment_name = file.name;
+    attachment_type = file.type;
+  }
+  if(!body.trim() && !attachment_path) return false;
+  const { error } = await supabaseClient.from('messages').insert({
+    channel_id: channelId, user_id: currentManagerId, body: body.trim(),
+    attachment_path, attachment_name, attachment_type
+  });
+  if(error){ console.error('send message failed', error); showToast('Could not send message'); return false; }
+  return true;
+}
+
+/* ================= Team Chat: voice channels (P2P WebRTC mesh) =================
+   Free peer-to-peer audio using a public STUN server only (no TURN relay) —
+   solid for small calls, may occasionally fail to connect for someone on a
+   very restrictive network, per the agreed tradeoff. Signaling (who's joining,
+   offers/answers/ICE candidates) rides on a Supabase Realtime broadcast+presence
+   channel — no separate signaling server needed. */
+const RTC_CONFIG = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+
+async function joinVoiceChannel(channelId){
+  if(voiceChannelId){ await leaveVoiceChannel(); }
+  try{
+    voiceLocalStream = await navigator.mediaDevices.getUserMedia({ audio:true });
+  }catch(e){
+    showToast('Could not access microphone — check browser permissions');
+    return;
+  }
+  voiceChannelId = channelId;
+  voicePeers = {};
+  voiceParticipants = {};
+
+  const me = currentManagerRecord();
+  const myName = me ? me.name : 'Manager';
+
+  voiceRealtimeChannel = supabaseClient.channel('voice_' + channelId, {
+    config: { presence: { key: currentManagerId } }
+  });
+
+  voiceRealtimeChannel
+    .on('presence', { event: 'sync' }, ()=>{
+      const state = voiceRealtimeChannel.presenceState();
+      voiceParticipants = {};
+      Object.keys(state).forEach(key=>{
+        const meta = state[key][0];
+        voiceParticipants[key] = { name: meta.name };
+      });
+      if(currentView === 'chat') renderVoiceRoom();
+    })
+    .on('presence', { event: 'join' }, ({ key, newPresences })=>{
+      if(key === currentManagerId) return;
+      // New peer announced themselves — if we were already here, initiate a connection to them.
+      createPeerConnection(key, true);
+    })
+    .on('presence', { event: 'leave' }, ({ key })=>{
+      closePeerConnection(key);
+      if(currentView === 'chat') renderVoiceRoom();
+    })
+    .on('broadcast', { event: 'signal' }, ({ payload })=>{
+      if(payload.to !== currentManagerId) return;
+      handleVoiceSignal(payload);
+    })
+    .subscribe(async (status)=>{
+      if(status === 'SUBSCRIBED'){
+        await voiceRealtimeChannel.track({ name: myName });
+      }
+    });
+}
+
+async function leaveVoiceChannel(){
+  if(!voiceChannelId) return;
+  Object.keys(voicePeers).forEach(closePeerConnection);
+  if(voiceLocalStream){ voiceLocalStream.getTracks().forEach(t=>t.stop()); voiceLocalStream = null; }
+  if(voiceRealtimeChannel){ await voiceRealtimeChannel.untrack(); supabaseClient.removeChannel(voiceRealtimeChannel); voiceRealtimeChannel = null; }
+  voiceChannelId = null;
+  voiceParticipants = {};
+  voiceMuted = false;
+}
+
+function sendVoiceSignal(to, data){
+  voiceRealtimeChannel.send({ type:'broadcast', event:'signal', payload: { from: currentManagerId, to, ...data } });
+}
+
+function createPeerConnection(peerId, isInitiator){
+  if(voicePeers[peerId]) return voicePeers[peerId];
+  const pc = new RTCPeerConnection(RTC_CONFIG);
+  voicePeers[peerId] = pc;
+
+  voiceLocalStream.getTracks().forEach(track => pc.addTrack(track, voiceLocalStream));
+
+  pc.onicecandidate = (e)=>{
+    if(e.candidate) sendVoiceSignal(peerId, { kind:'ice', candidate: e.candidate });
+  };
+  pc.ontrack = (e)=>{
+    let audioEl = document.getElementById('voice-audio-' + peerId);
+    if(!audioEl){
+      audioEl = document.createElement('audio');
+      audioEl.id = 'voice-audio-' + peerId;
+      audioEl.autoplay = true;
+      document.body.appendChild(audioEl);
+    }
+    audioEl.srcObject = e.streams[0];
+  };
+
+  if(isInitiator){
+    pc.onnegotiationneeded = async ()=>{
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      sendVoiceSignal(peerId, { kind:'offer', sdp: pc.localDescription });
+    };
+  }
+  return pc;
+}
+
+async function handleVoiceSignal(payload){
+  const peerId = payload.from;
+  if(payload.kind === 'offer'){
+    const pc = createPeerConnection(peerId, false);
+    await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    sendVoiceSignal(peerId, { kind:'answer', sdp: pc.localDescription });
+  }else if(payload.kind === 'answer'){
+    const pc = voicePeers[peerId];
+    if(pc) await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+  }else if(payload.kind === 'ice'){
+    const pc = voicePeers[peerId];
+    if(pc && payload.candidate){ try{ await pc.addIceCandidate(payload.candidate); }catch(e){} }
+  }
+}
+
+function closePeerConnection(peerId){
+  const pc = voicePeers[peerId];
+  if(pc){ pc.close(); delete voicePeers[peerId]; }
+  const audioEl = document.getElementById('voice-audio-' + peerId);
+  if(audioEl) audioEl.remove();
+  delete voiceParticipants[peerId];
+}
+
+function toggleVoiceMute(){
+  if(!voiceLocalStream) return;
+  voiceMuted = !voiceMuted;
+  voiceLocalStream.getAudioTracks().forEach(t=> t.enabled = !voiceMuted);
+}
 
 /* ================= Access gate (real Supabase Auth) ================= */
 let managersList = [];   // all manager profiles, fetched from the `managers` table
@@ -1693,6 +2611,91 @@ function renderGate(errorMsg){
   document.getElementById('gatePassword').addEventListener('keydown', e=>{ if(e.key==='Enter') submit(); });
 }
 
+/* ================= Live updates (Supabase Realtime) ================= */
+// Requires "kv_store" and "managers" to be added to the supabase_realtime
+// publication in the database (one-time SQL setup, not code).
+let realtimeChannelsActive = false;
+
+// If someone's actively typing in a field, applying a live update right now
+// would rebuild the DOM under them and interrupt it. Defer the refresh until
+// they're done (blur), rather than skip it entirely.
+let pendingRealtimeRefresh = false;
+function requestRealtimeRefresh(){
+  const active = document.activeElement;
+  const isEditing = active && ['INPUT','TEXTAREA','SELECT'].includes(active.tagName);
+  if(isEditing){ pendingRealtimeRefresh = true; return; }
+  refresh();
+}
+document.addEventListener('focusout', ()=>{
+  if(pendingRealtimeRefresh){
+    pendingRealtimeRefresh = false;
+    setTimeout(refresh, 150); // let any blur-triggered save finish first
+  }
+});
+
+function handleKvStoreChange(payload){
+  const row = payload.new && payload.new.key ? payload.new : payload.old;
+  if(!row || !row.key) return;
+  const key = row.key;
+  const deleted = payload.eventType === 'DELETE';
+
+  if(key === 'roster'){
+    roster = deleted ? [] : (payload.new.value || []);
+    requestRealtimeRefresh();
+    return;
+  }
+  if(key.startsWith('attendance:')){
+    const date = key.slice('attendance:'.length);
+    if(attendanceCache[date] !== undefined){
+      attendanceCache[date] = deleted ? {} : (payload.new.value || {});
+    }
+    if(currentView === 'today' || currentView === 'overview') requestRealtimeRefresh();
+    return;
+  }
+  if(key.startsWith('violations:')){
+    const interpId = key.slice('violations:'.length);
+    if(violationsCache[interpId] !== undefined){
+      violationsCache[interpId] = deleted ? [] : (payload.new.value || []);
+    }
+    if(currentView === 'performance' || currentView === 'overview') requestRealtimeRefresh();
+    return;
+  }
+  if(key === 'import-review-log'){
+    importReviewCache = deleted ? [] : (payload.new.value || []);
+    if(currentView === 'performance') requestRealtimeRefresh();
+    return;
+  }
+}
+
+async function handleManagersChange(){
+  await loadManagersList();
+  requestRealtimeRefresh();
+}
+
+function setupRealtimeSubscriptions(){
+  if(realtimeChannelsActive) return;
+  realtimeChannelsActive = true;
+  supabaseClient
+    .channel('kv_store_changes')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'kv_store' }, handleKvStoreChange)
+    .subscribe();
+  supabaseClient
+    .channel('managers_changes')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'managers' }, handleManagersChange)
+    .subscribe();
+  supabaseClient
+    .channel('channels_changes')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'channels' }, async ()=>{
+      await loadChannels();
+      if(currentView === 'chat') requestRealtimeRefresh();
+    })
+    .subscribe();
+}
+function teardownRealtimeSubscriptions(){
+  realtimeChannelsActive = false;
+  supabaseClient.removeAllChannels();
+}
+
 async function completeSignIn(userId){
   currentManagerId = userId;
   authenticated = true;
@@ -1703,12 +2706,18 @@ async function completeSignIn(userId){
   const admin = managersList.find(m=>m.is_admin);
   await ensureSeedRoster(admin ? admin.user_id : userId);
   await migrateStatusCodesOnce();
+  await migrateStatusCodesV2Once();
+  await migrateCombineQarLogsOnce();
+  await migrateToneOfVoiceLabelOnce();
   await loadRoster();
+  setupRealtimeSubscriptions();
   loading = false;
   render();
 }
 
 async function signOut(){
+  if(voiceChannelId) await leaveVoiceChannel();
+  teardownRealtimeSubscriptions();
   await supabaseClient.auth.signOut();
   authenticated = false;
   currentManagerId = null;
@@ -1717,6 +2726,12 @@ async function signOut(){
   monthLoaded = {};
   managersList = [];
   currentView = 'today';
+  channels = [];
+  currentChannelId = null;
+  messagesCache = {};
+  chatMessagesSubscribed = null;
+  chatMsgRTChannel = null;
+  importReviewCache = null;
   renderGate();
 }
 
