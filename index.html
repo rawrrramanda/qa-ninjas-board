@@ -276,6 +276,11 @@
 
   /* ---------- Performance ---------- */
   .sev-badge{font-family:'IBM Plex Mono';font-size:11px;font-weight:600;padding:3px 9px;border-radius:20px;display:inline-block;}
+  .item-pill{
+    display:inline-block;font-family:'IBM Plex Mono';font-size:11px;font-weight:500;
+    padding:3px 8px;border-radius:6px;background:var(--status-absent-soft);color:var(--status-absent);
+    margin:2px 3px 2px 0;overflow-wrap:anywhere;max-width:100%;
+  }
   .sev-PME{background:var(--status-late-soft);color:var(--status-late);}
   .sev-DNME{background:var(--status-absent-soft);color:var(--status-absent);}
   .sev-NA{background:var(--status-off-soft);color:var(--status-off);}
@@ -389,6 +394,7 @@ let currentMonth = new Date().toISOString().slice(0,7);
 let loading = true;
 let currentManagerId = null;     // which manager profile is logged in
 let viewFilter = 'mine';         // 'mine' | 'all' — which interpreters to show
+let perfInterpreterFilter = '';  // '' = all interpreters, else a specific interpreter id
 
 const STATUSES = [
   {code:'P', label:'Present'},
@@ -1067,6 +1073,78 @@ async function renderOverview(main){
         <span><i class="cell st-none" style="display:inline-block;width:10px;height:10px;"></i>No entry</span>
       </div>
     </div>
+
+    ${await renderPerformanceOverviewPanel(ids)}
+  `;
+}
+
+// Builds the "Performance overview" panel for Monthly Overview: total flags
+// this month, a top-4 flagged-violation chart, and per-interpreter flag counts.
+async function renderPerformanceOverviewPanel(ids){
+  await ensureViolationsLoadedFor(ids);
+  const nameOf = id => (roster.find(p=>p.id===id)?.name) || '(removed)';
+
+  let totalFlags = 0, pmeCount = 0, dnmeCount = 0, plainCount = 0;
+  const itemCounts = {};
+  const perInterpreter = {};
+  ids.forEach(id=>{
+    const monthEntries = (violationsCache[id]||[]).filter(v=>v.date.slice(0,7)===currentMonth);
+    perInterpreter[id] = monthEntries.length;
+    monthEntries.forEach(v=>{
+      totalFlags++;
+      if(v.severity==='PME') pmeCount++;
+      else if(v.severity==='DNME') dnmeCount++;
+      else plainCount++;
+      itemCounts[v.item] = (itemCounts[v.item]||0) + 1;
+    });
+  });
+
+  const topItems = Object.entries(itemCounts).sort((a,b)=>b[1]-a[1]).slice(0,4);
+  const maxTop = topItems.length ? topItems[0][1] : 0;
+  const topInterpreters = ids.map(id=>({id, count: perInterpreter[id]})).sort((a,b)=>b.count-a.count);
+
+  if(totalFlags === 0){
+    return `
+      <div class="panel" style="padding:18px 20px;margin-top:22px;">
+        <div style="font-family:'Space Grotesk';font-size:14px;font-weight:600;margin-bottom:4px;">Performance overview</div>
+        <div class="hint">No violations flagged for this team in ${currentMonth}.</div>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="panel" style="padding:18px 20px;margin-top:22px;">
+      <div style="font-family:'Space Grotesk';font-size:14px;font-weight:600;margin-bottom:14px;">Performance overview</div>
+
+      <div class="stat-row" style="margin-bottom:20px;">
+        <div class="stat-chip"><div class="n">${totalFlags}</div><div class="l">Total flags</div></div>
+        <div class="stat-chip"><div class="n">${pmeCount}</div><div class="l">PME</div></div>
+        <div class="stat-chip"><div class="n">${dnmeCount}</div><div class="l">DNME</div></div>
+        <div class="stat-chip"><div class="n">${plainCount}</div><div class="l">Flagged (no severity)</div></div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;">
+        <div>
+          <div style="font-size:11.5px;font-weight:700;text-transform:uppercase;letter-spacing:0.03em;color:var(--ink-soft);margin-bottom:10px;">Top flagged violations</div>
+          ${topItems.map(([item,count])=>`
+            <div style="margin-bottom:10px;">
+              <div style="display:flex;justify-content:space-between;gap:8px;font-size:12.5px;margin-bottom:4px;">
+                <span style="overflow-wrap:anywhere;">${escapeHtml(item)}</span><span style="font-family:'IBM Plex Mono';color:var(--ink-soft);flex-shrink:0;">${count}</span>
+              </div>
+              <span class="pct-bar" style="width:100%;"><span style="width:${maxTop ? Math.round(count/maxTop*100) : 0}%;background:var(--status-absent);"></span></span>
+            </div>
+          `).join('')}
+        </div>
+        <div>
+          <div style="font-size:11.5px;font-weight:700;text-transform:uppercase;letter-spacing:0.03em;color:var(--ink-soft);margin-bottom:10px;">Flags by interpreter</div>
+          ${topInterpreters.filter(x=>x.count>0).map(x=>`
+            <div style="display:flex;justify-content:space-between;gap:8px;font-size:12.5px;padding:5px 0;border-bottom:1px solid var(--border);">
+              <span style="overflow-wrap:anywhere;">${escapeHtml(nameOf(x.id))}</span><span style="font-family:'IBM Plex Mono';color:var(--ink-soft);flex-shrink:0;">${x.count}</span>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    </div>
   `;
 }
 
@@ -1147,6 +1225,10 @@ async function renderPerformance(main){
     <div class="date-nav" style="margin-bottom:16px;">
       <button class="btn btn-sm ${viewFilter==='mine'?'btn-primary':''}" data-filter="mine">My team</button>
       <button class="btn btn-sm ${viewFilter==='all'?'btn-primary':''}" data-filter="all">All teams</button>
+      <select id="perfInterpFilter" style="margin-left:8px;">
+        <option value="">All interpreters</option>
+        ${allActive.map(p=>`<option value="${p.id}" ${perfInterpreterFilter===p.id?'selected':''}>${escapeHtml(p.name)}</option>`).join('')}
+      </select>
     </div>
 
     <div class="panel" style="margin-bottom:22px;">
@@ -1198,6 +1280,7 @@ async function renderPerformance(main){
   document.querySelectorAll('[data-filter]').forEach(btn=>{
     btn.addEventListener('click', ()=>{ viewFilter = btn.dataset.filter; refresh(); });
   });
+  document.getElementById('perfInterpFilter').addEventListener('change', e=>{ perfInterpreterFilter = e.target.value; refresh(); });
 
   if(scope.length > 0){
     // enable each item's severity picker only once its checkbox is checked
@@ -1254,29 +1337,30 @@ function renderPerformanceBody(scope){
   const body = document.getElementById('perfBody');
   const nameOf = id => (roster.find(p=>p.id===id)?.name) || '(removed)';
 
-  // Monthly + all-time counts per interpreter, plus category breakdown for the month.
-  const catNames = VIOLATION_CATALOG.map(c=>c.category);
+  const filteredScope = perfInterpreterFilter ? scope.filter(p=>p.id===perfInterpreterFilter) : scope;
+
+  // Monthly + all-time counts per interpreter, broken down by the specific
+  // violation item flagged (not just its broad category) — e.g. "Transparency ×1".
   const stats = {};
-  scope.forEach(p=>{
+  filteredScope.forEach(p=>{
     const all = violationsCache[p.id] || [];
     const monthEntries = all.filter(v=>v.date.slice(0,7) === currentMonth);
-    const byCat = {};
-    catNames.forEach(c=> byCat[c] = 0);
-    monthEntries.forEach(v=>{ if(byCat[v.category] !== undefined) byCat[v.category]++; });
-    stats[p.id] = { total: all.length, thisMonth: monthEntries.length, byCat };
+    const byItem = {};
+    monthEntries.forEach(v=>{ byItem[v.item] = (byItem[v.item]||0) + 1; });
+    stats[p.id] = { total: all.length, thisMonth: monthEntries.length, byItem };
   });
 
-  // Flat list of this month's entries across the scoped team, most recent first.
+  // Flat list of this month's entries across the filtered scope, most recent first.
   const monthLog = [];
-  scope.forEach(p=>{
+  filteredScope.forEach(p=>{
     (violationsCache[p.id]||[]).filter(v=>v.date.slice(0,7)===currentMonth).forEach(v=>{
       monthLog.push({ interpreterId: p.id, ...v });
     });
   });
   monthLog.sort((a,b)=> b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
 
-  if(scope.length === 0){
-    body.innerHTML = '';
+  if(filteredScope.length === 0){
+    body.innerHTML = `<div class="panel"><div class="empty-state"><div class="big">No interpreter selected</div><div>Pick a different interpreter, or choose "All interpreters" above.</div></div></div>`;
     return;
   }
 
@@ -1285,18 +1369,20 @@ function renderPerformanceBody(scope){
       <div class="summary-scroll">
       <table class="month-summary violation-summary">
         <thead><tr>
-          <th>Interpreter</th><th>This month</th><th>All-time</th>
-          ${catNames.map(c=>`<th style="width:88px;overflow-wrap:break-word;font-size:10px;padding:12px 6px;" title="${escapeAttr(c)}">${escapeHtml(c.split(/[\s/]+/)[0])}</th>`).join('')}
+          <th style="width:150px;">Interpreter</th><th style="width:90px;">This month</th><th style="width:90px;">All-time</th>
+          <th>Violations flagged this month</th>
         </tr></thead>
         <tbody>
-          ${scope.map(p=>`
+          ${filteredScope.map(p=>{
+            const items = Object.entries(stats[p.id].byItem).sort((a,b)=>b[1]-a[1]);
+            return `
             <tr>
               <td style="font-family:'Inter';font-size:13.5px;">${escapeHtml(p.name)}</td>
               <td>${stats[p.id].thisMonth}</td>
               <td>${stats[p.id].total}</td>
-              ${catNames.map(c=>`<td>${stats[p.id].byCat[c]}</td>`).join('')}
+              <td>${items.length ? items.map(([item,count])=>`<span class="item-pill">${escapeHtml(item)} ×${count}</span>`).join(' ') : '<span style="color:var(--ink-faint);">—</span>'}</td>
             </tr>
-          `).join('')}
+          `;}).join('')}
         </tbody>
       </table>
       </div>
@@ -1391,9 +1477,10 @@ function renderPerformanceBody(scope){
 function exportPerformanceCsv(){
   const allActive = roster.filter(p=>p.active !== false);
   const scope = viewFilter === 'mine' ? allActive.filter(p=>p.managerId === currentManagerId) : allActive;
-  ensureViolationsLoadedFor(scope.map(p=>p.id)).then(()=>{
+  const filteredScope = perfInterpreterFilter ? scope.filter(p=>p.id===perfInterpreterFilter) : scope;
+  ensureViolationsLoadedFor(filteredScope.map(p=>p.id)).then(()=>{
     const rows = [['Date','QAR ID','Interpreter','Category','Item','Severity','Note','Logged by']];
-    scope.forEach(p=>{
+    filteredScope.forEach(p=>{
       (violationsCache[p.id]||[]).filter(v=>v.date.slice(0,7)===currentMonth).forEach(v=>{
         rows.push([v.date, v.qar||'', p.name, v.category, v.item, v.severity||'', v.note||'', managerName(v.loggedBy)]);
       });
@@ -1472,72 +1559,30 @@ async function ensureSeedRoster(seedManagerId){
   await storageSet('roster', seeded);
 }
 
-/* ---- Gate screens: sign in, or create a new account ---- */
-let gateStage = 'login';   // 'login' | 'create'
-
+/* ---- Gate screen: sign in only. Account creation is admin-only now, via the Roster tab. ---- */
 function renderGate(errorMsg){
   const app = document.getElementById('app');
-  let inner = '';
-
-  if(gateStage === 'create'){
-    inner = `
-      <div class="gate-brand"><span class="dot"></span>QA Ninjas</div>
-      <div class="gate-sub">Create your manager account</div>
-      <div class="gate-error">${errorMsg || ''}</div>
-      <input type="text" id="gateName" placeholder="Your name" autofocus>
-      <input type="email" id="gateEmail" placeholder="Email">
-      <input type="password" id="gatePassword" placeholder="Password (min 6 characters)">
-      <button class="btn btn-primary" id="gateCreate">Create account & start managing</button>
-      <button class="btn btn-ghost" id="gateBack" style="width:100%;justify-content:center;margin-top:8px;">&larr; Back to sign in</button>
-    `;
-  }else{
-    inner = `
-      <div class="gate-brand"><span class="dot"></span>QA Ninjas</div>
-      <div class="gate-sub">Sign in to manage your team</div>
-      <div class="gate-error">${errorMsg || ''}</div>
-      <input type="email" id="gateEmail" placeholder="Email" autofocus>
-      <input type="password" id="gatePassword" placeholder="Password">
-      <button class="btn btn-primary" id="gateSubmit">Sign in</button>
-      <button class="btn btn-ghost" id="gateNew" style="width:100%;justify-content:center;margin-top:8px;">+ Create a new manager account</button>
-    `;
-  }
+  const inner = `
+    <div class="gate-brand"><span class="dot"></span>QA Ninjas</div>
+    <div class="gate-sub">Sign in to manage your team</div>
+    <div class="gate-error">${errorMsg || ''}</div>
+    <input type="email" id="gateEmail" placeholder="Email" autofocus>
+    <input type="password" id="gatePassword" placeholder="Password">
+    <button class="btn btn-primary" id="gateSubmit">Sign in</button>
+  `;
 
   app.innerHTML = `<div class="gate-wrap"><div class="gate-card">${inner}</div></div>`;
 
-  if(gateStage === 'login'){
-    const submit = async ()=>{
-      const email = document.getElementById('gateEmail').value.trim();
-      const password = document.getElementById('gatePassword').value;
-      if(!email || !password){ renderGate('Enter your email and password.'); return; }
-      const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
-      if(error){ renderGate(error.message); return; }
-      await completeSignIn(data.user.id);
-    };
-    document.getElementById('gateSubmit').addEventListener('click', submit);
-    document.getElementById('gatePassword').addEventListener('keydown', e=>{ if(e.key==='Enter') submit(); });
-    document.getElementById('gateNew').addEventListener('click', ()=>{ gateStage='create'; renderGate(); });
-  }
-
-  if(gateStage === 'create'){
-    document.getElementById('gateCreate').addEventListener('click', async ()=>{
-      const name = document.getElementById('gateName').value.trim();
-      const email = document.getElementById('gateEmail').value.trim();
-      const password = document.getElementById('gatePassword').value;
-      if(!name){ renderGate('Enter your name.'); return; }
-      if(!email || !password){ renderGate('Enter an email and password.'); return; }
-      if(password.length < 6){ renderGate('Password needs to be at least 6 characters.'); return; }
-      const { data, error } = await supabaseClient.auth.signUp({ email, password, options: { data: { full_name: name, display_name: name } } });
-      if(error){ renderGate(error.message); return; }
-      if(!data.session){
-        renderGate('Account created — check your email to confirm, then sign in.');
-        gateStage = 'login';
-        return;
-      }
-      await ensureOwnManagerProfile(name);
-      await completeSignIn(data.user.id);
-    });
-    document.getElementById('gateBack').addEventListener('click', ()=>{ gateStage='login'; renderGate(); });
-  }
+  const submit = async ()=>{
+    const email = document.getElementById('gateEmail').value.trim();
+    const password = document.getElementById('gatePassword').value;
+    if(!email || !password){ renderGate('Enter your email and password.'); return; }
+    const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+    if(error){ renderGate(error.message); return; }
+    await completeSignIn(data.user.id);
+  };
+  document.getElementById('gateSubmit').addEventListener('click', submit);
+  document.getElementById('gatePassword').addEventListener('keydown', e=>{ if(e.key==='Enter') submit(); });
 }
 
 async function completeSignIn(userId){
@@ -1563,7 +1608,6 @@ async function signOut(){
   monthLoaded = {};
   managersList = [];
   currentView = 'today';
-  gateStage = 'login';
   renderGate();
 }
 
