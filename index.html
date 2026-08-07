@@ -141,8 +141,8 @@
   .pill:hover{border-color:var(--accent);}
   .pill.sel-P{background:var(--status-present-soft);border-color:var(--status-present);color:var(--status-present);}
   .pill.sel-A{background:var(--status-absent-soft);border-color:var(--status-absent);color:var(--status-absent);}
-  .pill.sel-L{background:var(--status-leave-soft);border-color:var(--status-leave);color:var(--status-leave);}
-  .pill.sel-T{background:var(--status-late-soft);border-color:var(--status-late);color:var(--status-late);}
+  .pill.sel-U{background:var(--status-leave-soft);border-color:var(--status-leave);color:var(--status-leave);}
+  .pill.sel-L{background:var(--status-late-soft);border-color:var(--status-late);color:var(--status-late);}
   .pill.sel-O{background:var(--status-off-soft);border-color:var(--status-off);color:var(--status-off);}
 
   .upload-cell{display:flex;align-items:flex-start;gap:8px;}
@@ -223,8 +223,8 @@
   }
   .cell.st-P{background:var(--status-present);}
   .cell.st-A{background:var(--status-absent);}
-  .cell.st-L{background:var(--status-leave);}
-  .cell.st-T{background:var(--status-late);}
+  .cell.st-U{background:var(--status-leave);}
+  .cell.st-L{background:var(--status-late);}
   .cell.st-O{background:#DDE1DE;}
   .cell.st-none{background:#F1F2EF;border:1px dashed #DDD;}
 
@@ -413,28 +413,40 @@ async function deleteScreenshot(storedValue){
 }
 
 /* ================= State ================= */
+const RECORD_TIMEZONE = 'America/New_York'; // records are kept on Eastern Time, regardless of where a manager is logging in from
+
 let roster = [];                 // [{id,name,role,active}]
 let attendanceCache = {};        // { 'YYYY-MM-DD': { [interpreterId]: {status,note,brandCheck,onCall,brandCheckAt,onCallAt} } }
 let monthLoaded = {};            // { 'YYYY-MM': true }
 let currentView = 'today';
-let currentDate = new Date().toISOString().slice(0,10);
-let currentMonth = new Date().toISOString().slice(0,7);
+let currentDate = todayStr();
+let currentMonth = todayStr().slice(0,7);
 let loading = true;
 let currentManagerId = null;     // which manager profile is logged in
 let viewFilter = 'mine';         // 'mine' | 'all' — which interpreters to show
 let perfInterpreterFilter = '';  // '' = all interpreters, else a specific interpreter id
+let todaySearchQuery = '';       // live search box on Today's Log
 
 const STATUSES = [
   {code:'P', label:'Present'},
   {code:'A', label:'Absent'},
-  {code:'L', label:'Leave'},
-  {code:'T', label:'Late'},
+  {code:'U', label:'Unsure'},
+  {code:'L', label:'Late'},
   {code:'O', label:'Off'},
 ];
 const STATUS_MAP = Object.fromEntries(STATUSES.map(s=>[s.code,s]));
 
 function uid(){ return 'i_' + Math.random().toString(36).slice(2,10); }
-function todayStr(){ return new Date().toISOString().slice(0,10); }
+
+// "What day is it" per Eastern Time specifically — not the viewer's own timezone.
+// A manager logged in from anywhere in the world sees the same "today" as the
+// team actually operating on Eastern Time would. Automatically accounts for
+// EST/EDT daylight saving via the IANA timezone identifier above.
+function todayStr(){
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: RECORD_TIMEZONE, year:'numeric', month:'2-digit', day:'2-digit' }).formatToParts(new Date());
+  const get = t => parts.find(p=>p.type===t).value;
+  return `${get('year')}-${get('month')}-${get('day')}`;
+}
 function pad(n){ return n<10 ? '0'+n : ''+n; }
 function daysInMonth(ym){
   const [y,m] = ym.split('-').map(Number);
@@ -624,6 +636,37 @@ async function ensureMonthLoaded(ym){
   monthLoaded[ym] = true;
 }
 
+// One-time fix for every already-stored attendance record, run once per board
+// (tracked via a marker key so repeat logins skip it instantly). Rewrites the
+// old "Leave" code ('L') to the new "Unsure" code ('U'), and the old "Late"
+// code ('T') to its new code ('L') — done in a single pass per record, based
+// on each entry's original stored value, so the two renames can't collide
+// with each other even though 'L' briefly meant something else.
+async function migrateStatusCodesOnce(){
+  const done = await storageGet('migration:status-codes-v1');
+  if(done) return;
+  try{
+    const { data, error } = await supabaseClient.from('kv_store').select('key,value').like('key', 'attendance:%');
+    if(error){ console.error('status code migration scan failed', error); return; }
+    for(const row of (data || [])){
+      const day = row.value || {};
+      let changed = false;
+      Object.values(day).forEach(entry=>{
+        if(!entry || !entry.status) return;
+        if(entry.status === 'L'){ entry.status = 'U'; changed = true; }
+        else if(entry.status === 'T'){ entry.status = 'L'; changed = true; }
+      });
+      if(changed){
+        await storageSet(row.key, day);
+        if(attendanceCache[row.key.replace('attendance:','')] !== undefined){
+          attendanceCache[row.key.replace('attendance:','')] = day;
+        }
+      }
+    }
+    await storageSet('migration:status-codes-v1', true);
+  }catch(e){ console.error('status code migration failed', e); }
+}
+
 /* ---- Violations: one key per interpreter holding their full history ---- */
 let violationsCache = {};   // { interpreterId: [ {id, date, category, item, severity, note, loggedBy, createdAt} ] }
 async function ensureViolationsLoaded(interpreterId){
@@ -697,7 +740,7 @@ async function renderToday(main){
   const screenshotValues = active.flatMap(p=>[dayData[p.id]?.brandCheck, dayData[p.id]?.onCall]);
   const signedUrlMap = await getSignedUrls(screenshotValues);
 
-  const counts = {P:0,A:0,L:0,T:0,O:0};
+  const counts = {P:0,A:0,U:0,L:0,O:0};
   active.forEach(p=>{ const s = dayData[p.id]?.status; if(s) counts[s] = (counts[s]||0)+1; });
 
   main.innerHTML = `
@@ -714,6 +757,7 @@ async function renderToday(main){
     <div class="date-nav" style="margin-bottom:16px;">
       <button class="btn btn-sm ${viewFilter==='mine'?'btn-primary':''}" data-filter="mine">My team (${mineCount})</button>
       <button class="btn btn-sm ${viewFilter==='all'?'btn-primary':''}" data-filter="all">All teams (${allActive.length})</button>
+      <input type="text" id="todaySearch" placeholder="Search interpreter…" value="${escapeAttr(todaySearchQuery)}" style="margin-left:8px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);font-size:13px;width:180px;">
     </div>
 
     <div class="stat-row">
@@ -741,7 +785,7 @@ async function renderToday(main){
           ${active.map(p=>{
             const e = dayData[p.id] || {};
             return `
-            <tr data-id="${p.id}">
+            <tr data-id="${p.id}" data-search-name="${escapeAttr(p.name.toLowerCase())}">
               <td>
                 <div class="interp-name">${escapeHtml(p.name)}</div>
                 <div class="interp-role">${[p.language, p.shift, p.type].filter(Boolean).map(escapeHtml).join(' · ')}</div>
@@ -773,6 +817,12 @@ async function renderToday(main){
   document.getElementById('prevDay').addEventListener('click', ()=>{ currentDate = shiftDate(currentDate, -1); refresh(); });
   document.getElementById('nextDay').addEventListener('click', ()=>{ currentDate = shiftDate(currentDate, 1); refresh(); });
   document.getElementById('jumpToday').addEventListener('click', ()=>{ currentDate = todayStr(); refresh(); });
+
+  // search — filters visible rows instantly without re-rendering, so it stays
+  // smooth and never loses focus/cursor position while typing
+  const searchInput = document.getElementById('todaySearch');
+  searchInput.addEventListener('input', e=>{ todaySearchQuery = e.target.value; applyTodaySearchFilter(); });
+  applyTodaySearchFilter();
 
   // status pills
   document.querySelectorAll('[data-status]').forEach(btn=>{
@@ -835,6 +885,32 @@ async function renderToday(main){
   });
 }
 
+// Filters Today's Log rows by name as you type — pure DOM show/hide, no data
+// fetch and no re-render, so it's instant and never interrupts typing.
+function applyTodaySearchFilter(){
+  const query = todaySearchQuery.trim().toLowerCase();
+  const rows = document.querySelectorAll('[data-search-name]');
+  let visibleCount = 0;
+  rows.forEach(row=>{
+    const match = !query || row.dataset.searchName.includes(query);
+    row.style.display = match ? '' : 'none';
+    if(match) visibleCount++;
+  });
+  let noResults = document.getElementById('todaySearchNoResults');
+  const table = document.querySelector('#main table');
+  if(query && visibleCount === 0){
+    if(!noResults && table){
+      noResults = document.createElement('div');
+      noResults.id = 'todaySearchNoResults';
+      noResults.className = 'empty-state';
+      noResults.innerHTML = `<div class="big">No matches</div><div>No interpreter name matches "${escapeHtml(todaySearchQuery)}".</div>`;
+      table.insertAdjacentElement('afterend', noResults);
+    }
+  }else if(noResults){
+    noResults.remove();
+  }
+}
+
 function uploadCell(id, field, value, byManagerId, displayUrl){
   return `
     <div class="upload-cell">
@@ -861,9 +937,10 @@ function setField(dateStr, interpreterId, field, value){
 }
 
 function shiftDate(dateStr, delta){
-  const d = new Date(dateStr + 'T00:00:00');
-  d.setDate(d.getDate() + delta);
-  return d.toISOString().slice(0,10);
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + delta);
+  return `${dt.getUTCFullYear()}-${pad(dt.getUTCMonth()+1)}-${pad(dt.getUTCDate())}`;
 }
 
 /* ================= Roster view ================= */
@@ -1042,7 +1119,7 @@ async function renderOverview(main){
   const ids = [...idSet].sort((a,b)=> nameOf(a).localeCompare(nameOf(b)));
 
   const stats = {};
-  ids.forEach(id=> stats[id] = {P:0,A:0,L:0,T:0,O:0,total:0});
+  ids.forEach(id=> stats[id] = {P:0,A:0,U:0,L:0,O:0,total:0});
   for(let d=1; d<=lastDay; d++){
     const ds = currentMonth + '-' + pad(d);
     const day = attendanceCache[ds] || {};
@@ -1063,16 +1140,16 @@ async function renderOverview(main){
       <div class="summary-scroll">
       <table class="month-summary">
         <thead><tr>
-          <th>Interpreter</th><th>Present</th><th>Absent</th><th>Leave</th><th>Late</th><th>Off</th><th>Attendance rate</th>
+          <th>Interpreter</th><th>Present</th><th>Absent</th><th>Unsure</th><th>Late</th><th>Off</th><th>Attendance rate</th>
         </tr></thead>
         <tbody>
           ${ids.map(id=>{
             const s = stats[id];
             const scheduled = s.total - s.O;
-            const rate = scheduled > 0 ? Math.round(((s.P + s.T) / scheduled) * 100) : 0;
+            const rate = scheduled > 0 ? Math.round(((s.P + s.L) / scheduled) * 100) : 0;
             return `<tr>
               <td>${escapeHtml(nameOf(id))}</td>
-              <td>${s.P}</td><td>${s.A}</td><td>${s.L}</td><td>${s.T}</td><td>${s.O}</td>
+              <td>${s.P}</td><td>${s.A}</td><td>${s.U}</td><td>${s.L}</td><td>${s.O}</td>
               <td><span class="pct-bar"><span style="width:${rate}%"></span></span>${rate}%</td>
             </tr>`;
           }).join('')}
@@ -1625,6 +1702,7 @@ async function completeSignIn(userId){
   await loadManagersList();
   const admin = managersList.find(m=>m.is_admin);
   await ensureSeedRoster(admin ? admin.user_id : userId);
+  await migrateStatusCodesOnce();
   await loadRoster();
   loading = false;
   render();
@@ -1780,15 +1858,27 @@ function wireAccessSettingsPanel(){
 
 /* ================= Init ================= */
 (async function init(){
-  const { data: { session } } = await supabaseClient.auth.getSession();
-  if(session){
-    await completeSignIn(session.user.id);
-  }else{
-    renderGate();
+  try{
+    const { data: { session } } = await supabaseClient.auth.getSession();
+    if(session){
+      await completeSignIn(session.user.id);
+    }else{
+      renderGate();
+    }
+    supabaseClient.auth.onAuthStateChange((event)=>{
+      if(event === 'SIGNED_OUT'){ authenticated = false; currentManagerId = null; renderGate(); }
+    });
+  }catch(e){
+    console.error('App failed to start', e);
+    document.getElementById('app').innerHTML = `
+      <div class="gate-wrap"><div class="gate-card">
+        <div class="gate-brand"><span class="dot"></span>QA Ninjas</div>
+        <div class="gate-sub">Something went wrong loading the app</div>
+        <div class="gate-error">${escapeHtml(String(e && e.message ? e.message : e))}</div>
+        <div class="hint">Open your browser's DevTools (F12) → Console for full details, or try reloading the page.</div>
+      </div></div>
+    `;
   }
-  supabaseClient.auth.onAuthStateChange((event)=>{
-    if(event === 'SIGNED_OUT'){ authenticated = false; currentManagerId = null; renderGate(); }
-  });
 })();
 </script>
 </body>
