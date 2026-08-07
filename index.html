@@ -355,9 +355,10 @@ async function storageSet(key, value){
   }catch(e){ console.error('storage set threw for', key, e); return false; }
 }
 
-// Uploads a compressed image blob to Supabase Storage and returns its public URL.
-// Screenshots are stored as real files here (not base64 text), so they don't eat
-// into the same size budget as everything else — this is the whole point of moving.
+// Uploads a compressed image blob to Storage and returns its internal path (not
+// a URL). We deliberately don't store a permanent public URL — screenshots are
+// only viewable through short-lived signed URLs generated on demand, so a
+// leaked/logged URL can't be used to view the image indefinitely.
 async function uploadScreenshot(blob, pathHint){
   try{
     const path = `${pathHint}/${Date.now()}_${Math.random().toString(36).slice(2,8)}.jpg`;
@@ -365,19 +366,46 @@ async function uploadScreenshot(blob, pathHint){
       contentType: 'image/jpeg', upsert: false
     });
     if(error){ console.error('upload failed', error); return null; }
-    const { data } = supabaseClient.storage.from(SCREENSHOTS_BUCKET).getPublicUrl(path);
-    return data?.publicUrl || null;
+    return path;
   }catch(e){ console.error('upload failed', e); return null; }
 }
 
-// Deletes the actual file from Storage given its public URL, so removing a
-// screenshot in the app also frees the space — not just hides the reference.
-async function deleteScreenshot(publicUrl){
+// Handles both old-format stored values (full public URLs, from before the
+// bucket was made private) and new-format ones (bare paths), so existing
+// screenshots keep working without needing a one-time data migration.
+function pathFromStoredValue(value){
+  if(!value) return null;
+  const marker = `/${SCREENSHOTS_BUCKET}/`;
+  const idx = value.indexOf(marker);
+  if(idx === -1) return value; // already a bare path
+  return decodeURIComponent(value.slice(idx + marker.length).split('?')[0]);
+}
+
+const SIGNED_URL_TTL = 3600; // 1 hour — regenerated fresh on every page load/refresh
+async function getSignedUrl(path){
+  if(!path) return null;
   try{
-    const marker = `/${SCREENSHOTS_BUCKET}/`;
-    const idx = publicUrl.indexOf(marker);
-    if(idx === -1) return false;
-    const path = decodeURIComponent(publicUrl.slice(idx + marker.length));
+    const { data, error } = await supabaseClient.storage.from(SCREENSHOTS_BUCKET).createSignedUrl(path, SIGNED_URL_TTL);
+    if(error){ console.error('signed url failed', error); return null; }
+    return data?.signedUrl || null;
+  }catch(e){ console.error('signed url failed', e); return null; }
+}
+// Batches signed-URL generation for every screenshot on screen at once, rather
+// than one request per thumbnail.
+async function getSignedUrls(storedValues){
+  const paths = [...new Set(storedValues.map(pathFromStoredValue).filter(Boolean))];
+  const map = {};
+  await Promise.all(paths.map(async p=>{ map[p] = await getSignedUrl(p); }));
+  return map;
+}
+
+// Deletes the actual file from Storage, so removing a screenshot in the app
+// also frees the space — not just hides the reference. Accepts either an old
+// full URL or a new bare path.
+async function deleteScreenshot(storedValue){
+  try{
+    const path = pathFromStoredValue(storedValue);
+    if(!path) return false;
     const { error } = await supabaseClient.storage.from(SCREENSHOTS_BUCKET).remove([path]);
     if(error){ console.error('delete failed', error); return false; }
     return true;
@@ -666,6 +694,9 @@ async function renderToday(main){
   const active = viewFilter === 'mine' ? allActive.filter(p=>p.managerId === currentManagerId) : allActive;
   const mineCount = allActive.filter(p=>p.managerId === currentManagerId).length;
 
+  const screenshotValues = active.flatMap(p=>[dayData[p.id]?.brandCheck, dayData[p.id]?.onCall]);
+  const signedUrlMap = await getSignedUrls(screenshotValues);
+
   const counts = {P:0,A:0,L:0,T:0,O:0};
   active.forEach(p=>{ const s = dayData[p.id]?.status; if(s) counts[s] = (counts[s]||0)+1; });
 
@@ -722,8 +753,8 @@ async function renderToday(main){
                   ${STATUSES.map(s=>`<button class="pill ${e.status===s.code?'sel-'+s.code:''}" data-status="${s.code}" data-id="${p.id}">${s.code}</button>`).join('')}
                 </div>
               </td>
-              <td>${uploadCell(p.id, 'brandCheck', e.brandCheck, e.brandCheckBy)}</td>
-              <td>${uploadCell(p.id, 'onCall', e.onCall, e.onCallBy)}</td>
+              <td>${uploadCell(p.id, 'brandCheck', e.brandCheck, e.brandCheckBy, signedUrlMap[pathFromStoredValue(e.brandCheck)])}</td>
+              <td>${uploadCell(p.id, 'onCall', e.onCall, e.onCallBy, signedUrlMap[pathFromStoredValue(e.onCall)])}</td>
               <td><input class="note-input" data-note="${p.id}" placeholder="Add a note…" value="${escapeAttr(e.note||'')}"></td>
             </tr>`;
           }).join('')}
@@ -804,11 +835,11 @@ async function renderToday(main){
   });
 }
 
-function uploadCell(id, field, value, byManagerId){
+function uploadCell(id, field, value, byManagerId, displayUrl){
   return `
     <div class="upload-cell">
       ${value
-        ? `<img class="thumb" src="${value}" data-view-img="${value}">`
+        ? (displayUrl ? `<img class="thumb" src="${displayUrl}" data-view-img="${displayUrl}">` : `<div class="thumb-empty" title="Could not load image">&#9888;</div>`)
         : `<div class="thumb-empty">&#128247;</div>`}
       <div>
         <div class="upload-actions">
