@@ -1431,19 +1431,34 @@ function currentManagerRecord(){ return managersList.find(m=>m.user_id===current
 
 async function loadManagersList(){
   const { data, error } = await supabaseClient.from('managers').select('*').order('created_at');
+  if(error){ console.error('loadManagersList failed', error); showToast('Could not load manager list — check console'); }
   managersList = error ? [] : (data || []);
 }
 
-// Makes sure a logged-in auth user has a row in `managers` (name + admin flag).
+// Makes sure a logged-in auth user has a row in `managers` (name + email + admin flag).
 // The very first manager ever created on a fresh board becomes admin automatically;
-// everyone after that starts as a regular (non-admin) manager.
+// everyone after that starts as a regular (non-admin) manager. Also backfills email
+// on older rows that predate the email column, so admins can send reset links.
 async function ensureOwnManagerProfile(name){
-  const { data: existing } = await supabaseClient.from('managers').select('*').eq('user_id', currentManagerId).maybeSingle();
-  if(existing) return existing;
+  const { data: { user } } = await supabaseClient.auth.getUser();
+  const email = user?.email || null;
+
+  const { data: existing, error: selErr } = await supabaseClient.from('managers').select('*').eq('user_id', currentManagerId).maybeSingle();
+  if(selErr){ console.error('manager profile lookup failed', selErr); showToast('Could not load your profile — check console'); return null; }
+
+  if(existing){
+    if(!existing.email && email){
+      await supabaseClient.from('managers').update({ email }).eq('user_id', currentManagerId);
+      existing.email = email;
+    }
+    return existing;
+  }
+
   const { count } = await supabaseClient.from('managers').select('*', { count: 'exact', head: true });
   const isFirstEver = !count || count === 0;
-  const row = { user_id: currentManagerId, name: name || 'New Manager', is_admin: isFirstEver };
-  await supabaseClient.from('managers').insert(row);
+  const row = { user_id: currentManagerId, name: name || 'New Manager', email, is_admin: isFirstEver };
+  const { error: insErr } = await supabaseClient.from('managers').insert(row);
+  if(insErr){ console.error('manager profile creation failed', insErr); showToast('Could not create your profile — check console'); return null; }
   return row;
 }
 
@@ -1511,7 +1526,7 @@ function renderGate(errorMsg){
       if(!name){ renderGate('Enter your name.'); return; }
       if(!email || !password){ renderGate('Enter an email and password.'); return; }
       if(password.length < 6){ renderGate('Password needs to be at least 6 characters.'); return; }
-      const { data, error } = await supabaseClient.auth.signUp({ email, password });
+      const { data, error } = await supabaseClient.auth.signUp({ email, password, options: { data: { full_name: name, display_name: name } } });
       if(error){ renderGate(error.message); return; }
       if(!data.session){
         renderGate('Account created — check your email to confirm, then sign in.');
@@ -1556,29 +1571,71 @@ async function signOut(){
 function renderAccessSettingsPanel(){
   const me = currentManagerRecord();
   if(!me) return '';
+  const nameEditor = `
+    <div class="settings-panel">
+      <label>Your name</label>
+      <div class="row">
+        <input type="text" id="myNameInput" value="${escapeAttr(me.name)}">
+        <button class="btn btn-sm" id="saveMyName">Save</button>
+      </div>
+      <div class="hint" style="margin-top:8px;">This is the name shown next to anything you log — attendance, screenshots, violation flags.</div>
+    </div>
+    <div class="settings-panel">
+      <label>Change your password</label>
+      <div class="row">
+        <input type="password" id="myNewPassword" placeholder="New password (min 6 characters)">
+        <button class="btn btn-sm" id="saveMyPassword">Update password</button>
+      </div>
+    </div>
+  `;
   if(me.is_admin){
-    return `
+    return nameEditor + `
       <div class="settings-panel">
         <label>Manager accounts</label>
         ${managersList.map(m=>`
-          <div class="row" style="margin-bottom:8px;">
-            <span style="width:160px;font-size:13px;font-weight:600;">${escapeHtml(m.name)}${m.user_id===currentManagerId ? ' <span style="color:var(--ink-faint);font-weight:400;">(you)</span>' : ''}</span>
-            <span style="font-size:12px;color:var(--ink-soft);width:110px;">${m.is_admin ? 'Admin' : 'Manager'}</span>
+          <div class="row" style="margin-bottom:8px;flex-wrap:wrap;">
+            <span style="width:150px;font-size:13px;font-weight:600;">${escapeHtml(m.name)}${m.user_id===currentManagerId ? ' <span style="color:var(--ink-faint);font-weight:400;">(you)</span>' : ''}</span>
+            <span style="font-size:11.5px;color:var(--ink-soft);width:170px;">${escapeHtml(m.email || 'no email on file')}</span>
+            <span style="font-size:12px;color:var(--ink-soft);width:80px;">${m.is_admin ? 'Admin' : 'Manager'}</span>
             ${m.user_id!==currentManagerId ? `<button class="btn btn-sm" data-toggle-admin="${m.user_id}" data-currently="${m.is_admin}">${m.is_admin ? 'Remove admin' : 'Make admin'}</button>` : ''}
+            ${m.email ? `<button class="btn btn-sm" data-reset-pw="${escapeAttr(m.email)}">Send password reset</button>` : ''}
+            ${m.user_id!==currentManagerId ? `<button class="btn btn-sm" data-set-pw="${m.user_id}" data-set-pw-name="${escapeAttr(m.name)}">Set password directly</button>` : ''}
           </div>
         `).join('')}
-        <div class="hint" style="margin-top:8px;">Real accounts now — each manager signs in with their own email and password. To reset someone's password, or to remove an account entirely, use your Supabase dashboard → Authentication → Users.</div>
+        <div class="hint" style="margin-top:8px;">"Send password reset" emails them a secure link to set their own. "Set password directly" lets you type a new one yourself right now — useful if email isn't reliable for your team. To remove an account entirely, use your Supabase dashboard → Authentication → Users.</div>
+      </div>
+      <div class="settings-panel">
+        <label>Create a new manager account</label>
+        <div class="row" style="flex-wrap:wrap;">
+          <input type="text" id="newMgrName" placeholder="Name">
+          <input type="email" id="newMgrEmail" placeholder="Email">
+          <input type="password" id="newMgrPassword" placeholder="Password (min 6 characters)">
+          <button class="btn btn-sm btn-primary" id="createMgrAccount">Create account</button>
+        </div>
+        <div class="hint" style="margin-top:8px;">Creates the account directly and confirms it immediately — they can sign in right away, no confirmation email needed.</div>
       </div>
     `;
   }
-  return `
+  return nameEditor + `
     <div class="settings-panel">
       <label>Your account</label>
-      <div class="hint">Signed in as ${escapeHtml(me.name)}. To change your password, use "Forgot password" on the sign-in screen, or ask an admin.</div>
+      <div class="hint">To change your password, use "Forgot password" on the sign-in screen, or ask an admin.</div>
     </div>
   `;
 }
 function wireAccessSettingsPanel(){
+  const saveNameBtn = document.getElementById('saveMyName');
+  if(saveNameBtn){
+    saveNameBtn.addEventListener('click', async ()=>{
+      const val = document.getElementById('myNameInput').value.trim();
+      if(!val){ showToast('Name cannot be empty'); return; }
+      const { error } = await supabaseClient.from('managers').update({ name: val }).eq('user_id', currentManagerId);
+      if(error){ console.error('name update failed', error); showToast('Update failed — try again'); return; }
+      showToast('Name updated');
+      await loadManagersList();
+      refresh();
+    });
+  }
   document.querySelectorAll('[data-toggle-admin]').forEach(btn=>{
     btn.addEventListener('click', async ()=>{
       const targetId = btn.dataset.toggleAdmin;
@@ -1590,6 +1647,60 @@ function wireAccessSettingsPanel(){
       refresh();
     });
   });
+  document.querySelectorAll('[data-reset-pw]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const email = btn.dataset.resetPw;
+      if(!confirm(`Send a password reset email to ${email}?`)) return;
+      const { error } = await supabaseClient.auth.resetPasswordForEmail(email);
+      if(error){ console.error('reset email failed', error); showToast('Could not send reset email — try again'); return; }
+      showToast(`Reset email sent to ${email}`);
+    });
+  });
+
+  const savePwBtn = document.getElementById('saveMyPassword');
+  if(savePwBtn){
+    savePwBtn.addEventListener('click', async ()=>{
+      const val = document.getElementById('myNewPassword').value;
+      if(!val || val.length < 6){ showToast('Password needs to be at least 6 characters'); return; }
+      const { error } = await supabaseClient.auth.updateUser({ password: val });
+      if(error){ console.error('password update failed', error); showToast('Update failed — try again'); return; }
+      showToast('Password updated');
+      document.getElementById('myNewPassword').value = '';
+    });
+  }
+
+  document.querySelectorAll('[data-set-pw]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const targetId = btn.dataset.setPw;
+      const targetName = btn.dataset.setPwName;
+      const newPassword = prompt(`Set a new password for ${targetName} (min 6 characters):`);
+      if(!newPassword) return;
+      if(newPassword.length < 6){ showToast('Password needs to be at least 6 characters'); return; }
+      const { data, error } = await supabaseClient.functions.invoke('admin-actions', {
+        body: { action: 'set_password', target_user_id: targetId, new_password: newPassword }
+      });
+      if(error || data?.error){ console.error('set password failed', error || data.error); showToast('Could not set password — check console'); return; }
+      showToast(`Password updated for ${targetName}`);
+    });
+  });
+
+  const createBtn = document.getElementById('createMgrAccount');
+  if(createBtn){
+    createBtn.addEventListener('click', async ()=>{
+      const name = document.getElementById('newMgrName').value.trim();
+      const email = document.getElementById('newMgrEmail').value.trim();
+      const password = document.getElementById('newMgrPassword').value;
+      if(!name || !email || !password){ showToast('Fill in name, email, and password'); return; }
+      if(password.length < 6){ showToast('Password needs to be at least 6 characters'); return; }
+      const { data, error } = await supabaseClient.functions.invoke('admin-actions', {
+        body: { action: 'create_user', email, password, name }
+      });
+      if(error || data?.error){ console.error('create user failed', error || data.error); showToast('Could not create account — check console'); return; }
+      showToast(`Account created for ${name}`);
+      await loadManagersList();
+      refresh();
+    });
+  }
 }
 
 /* ================= Init ================= */
