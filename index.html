@@ -400,7 +400,6 @@ const STATUSES = [
 const STATUS_MAP = Object.fromEntries(STATUSES.map(s=>[s.code,s]));
 
 function uid(){ return 'i_' + Math.random().toString(36).slice(2,10); }
-function managerName(id){ return (settings?.managers.find(m=>m.id===id)?.name) || 'Unassigned'; }
 function todayStr(){ return new Date().toISOString().slice(0,10); }
 function pad(n){ return n<10 ? '0'+n : ''+n; }
 function daysInMonth(ym){
@@ -610,7 +609,7 @@ async function saveViolations(interpreterId){
 /* ================= Render root ================= */
 function render(){
   const app = document.getElementById('app');
-  const me = settings.managers.find(m=>m.id===currentManagerId);
+  const me = currentManagerRecord();
   app.innerHTML = `
     <div class="sidebar">
       <div class="brand">
@@ -847,7 +846,7 @@ function renderRoster(main){
         </select>
         <input type="text" name="offDays" id="newOffDays" placeholder="Off days">
         <select name="manager" id="newManager">
-          ${settings.managers.map(m=>`<option value="${m.id}" ${m.id===currentManagerId?'selected':''}>${escapeHtml(m.name)}</option>`).join('')}
+          ${managersList.map(m=>`<option value="${m.user_id}" ${m.user_id===currentManagerId?'selected':''}>${escapeHtml(m.name)}</option>`).join('')}
         </select>
         <button class="btn btn-primary" id="addPerson">Add to roster</button>
       </div>
@@ -889,7 +888,7 @@ Only these people will show up in Today's Log."></textarea>
               <td><input class="note-input" data-edit="offDays" data-id="${p.id}" value="${escapeAttr(p.offDays||'')}"></td>
               <td>
                 <select class="note-input" data-manager="${p.id}">
-                  ${settings.managers.map(m=>`<option value="${m.id}" ${p.managerId===m.id?'selected':''}>${escapeHtml(m.name)}</option>`).join('')}
+                  ${managersList.map(m=>`<option value="${m.user_id}" ${p.managerId===m.user_id?'selected':''}>${escapeHtml(m.name)}</option>`).join('')}
                 </select>
               </td>
               <td>
@@ -1423,205 +1422,187 @@ function escapeHtml(s){
 }
 function escapeAttr(s){ return escapeHtml(s); }
 
-/* ================= Access gate ================= */
-let settings = null;           // { managers: [{id,name,passcode}], sharedModel: true }
+/* ================= Access gate (real Supabase Auth) ================= */
+let managersList = [];   // all manager profiles, fetched from the `managers` table
 let authenticated = false;
-const DEFAULT_PASSCODE = 'ninjas2026';
 
-async function loadSettings(){
-  const s = await storageGet('app-settings');
+function managerName(id){ return (managersList.find(m=>m.user_id===id)?.name) || 'Unassigned'; }
+function currentManagerRecord(){ return managersList.find(m=>m.user_id===currentManagerId) || null; }
 
-  if(!s || !Array.isArray(s.managers) || !s.managers.length){
-    // Very first run ever: one login account, data lives in the plain shared keys already.
-    const defaultManager = { id: uid(), name: 'Main Team', passcode: DEFAULT_PASSCODE, isAdmin: true };
-    settings = { managers: [defaultManager], sharedModel: true };
-    await storageSet('app-settings', settings);
-  } else {
-    settings = s;
-    ensureAdminExists();
-  }
+async function loadManagersList(){
+  const { data, error } = await supabaseClient.from('managers').select('*').order('created_at');
+  managersList = error ? [] : (data || []);
+}
 
-  // Checked on every load, not just first run — if the roster write ever didn't take
-  // (e.g. a dropped request during setup), this fills it back in instead of leaving
-  // the board permanently empty with no way to recover except manual re-entry.
+// Makes sure a logged-in auth user has a row in `managers` (name + admin flag).
+// The very first manager ever created on a fresh board becomes admin automatically;
+// everyone after that starts as a regular (non-admin) manager.
+async function ensureOwnManagerProfile(name){
+  const { data: existing } = await supabaseClient.from('managers').select('*').eq('user_id', currentManagerId).maybeSingle();
+  if(existing) return existing;
+  const { count } = await supabaseClient.from('managers').select('*', { count: 'exact', head: true });
+  const isFirstEver = !count || count === 0;
+  const row = { user_id: currentManagerId, name: name || 'New Manager', is_admin: isFirstEver };
+  await supabaseClient.from('managers').insert(row);
+  return row;
+}
+
+async function ensureSeedRoster(seedManagerId){
   const existingRoster = await storageGet('roster');
-  if(!existingRoster || !existingRoster.length){
-    const seedManagerId = (settings.managers.find(m=>m.isAdmin) || settings.managers[0]).id;
-    const seeded = SEED_POOL.map(([name, language, shift, type, offDays])=>({
-      id: uid(), name, language, shift, type, offDays,
-      active: SEED_ACTIVE.has(name.toLowerCase()), managerId: seedManagerId
-    }));
-    await storageSet('roster', seeded);
-  }
+  if(existingRoster && existingRoster.length) return;
+  const seeded = SEED_POOL.map(([name, language, shift, type, offDays])=>({
+    id: uid(), name, language, shift, type, offDays,
+    active: SEED_ACTIVE.has(name.toLowerCase()), managerId: seedManagerId
+  }));
+  await storageSet('roster', seeded);
 }
 
-// Guarantees at least one manager account can reset passcodes — prefers "Main Team",
-// falls back to the first account, so nobody ever gets permanently locked out.
-function ensureAdminExists(){
-  if(settings.managers.some(m=>m.isAdmin)) return;
-  const main = settings.managers.find(m=>m.name === 'Main Team') || settings.managers[0];
-  if(main) main.isAdmin = true;
-}
-
-/* ---- Gate screens: choose profile -> enter passcode, or create a new profile ---- */
-let gateStage = 'choose';   // 'choose' | 'login' | 'create'
-let gateSelectedManager = null;
+/* ---- Gate screens: sign in, or create a new account ---- */
+let gateStage = 'login';   // 'login' | 'create'
 
 function renderGate(errorMsg){
   const app = document.getElementById('app');
   let inner = '';
 
-  if(gateStage === 'login'){
+  if(gateStage === 'create'){
     inner = `
       <div class="gate-brand"><span class="dot"></span>QA Ninjas</div>
-      <div class="gate-sub">Signing in as <strong>${escapeHtml(gateSelectedManager.name)}</strong></div>
+      <div class="gate-sub">Create your manager account</div>
       <div class="gate-error">${errorMsg || ''}</div>
-      <input type="password" id="gateInput" placeholder="Passcode" autofocus>
-      <button class="btn btn-primary" id="gateSubmit">Enter</button>
-      <button class="btn btn-ghost" id="gateBack" style="width:100%;justify-content:center;margin-top:8px;">&larr; Choose a different manager</button>
-    `;
-  }else if(gateStage === 'create'){
-    inner = `
-      <div class="gate-brand"><span class="dot"></span>QA Ninjas</div>
-      <div class="gate-sub">Set up a new manager profile</div>
-      <div class="gate-error">${errorMsg || ''}</div>
-      <input type="text" id="gateName" placeholder="Your name or team name" autofocus>
-      <input type="password" id="gateNewPasscode" placeholder="Choose a passcode">
-      <button class="btn btn-primary" id="gateCreate">Create profile & start managing</button>
-      <button class="btn btn-ghost" id="gateBack" style="width:100%;justify-content:center;margin-top:8px;">&larr; Back</button>
+      <input type="text" id="gateName" placeholder="Your name" autofocus>
+      <input type="email" id="gateEmail" placeholder="Email">
+      <input type="password" id="gatePassword" placeholder="Password (min 6 characters)">
+      <button class="btn btn-primary" id="gateCreate">Create account & start managing</button>
+      <button class="btn btn-ghost" id="gateBack" style="width:100%;justify-content:center;margin-top:8px;">&larr; Back to sign in</button>
     `;
   }else{
     inner = `
       <div class="gate-brand"><span class="dot"></span>QA Ninjas</div>
-      <div class="gate-sub">Who's managing today?</div>
-      ${settings.managers.map((m,i)=>`<button class="btn" data-choose="${m.id}" style="width:100%;justify-content:center;margin-bottom:8px;">${escapeHtml(m.name)}</button>`).join('')}
-      <button class="btn btn-primary" id="gateNew" style="width:100%;justify-content:center;margin-top:6px;">+ Add a new manager</button>
+      <div class="gate-sub">Sign in to manage your team</div>
+      <div class="gate-error">${errorMsg || ''}</div>
+      <input type="email" id="gateEmail" placeholder="Email" autofocus>
+      <input type="password" id="gatePassword" placeholder="Password">
+      <button class="btn btn-primary" id="gateSubmit">Sign in</button>
+      <button class="btn btn-ghost" id="gateNew" style="width:100%;justify-content:center;margin-top:8px;">+ Create a new manager account</button>
     `;
   }
 
   app.innerHTML = `<div class="gate-wrap"><div class="gate-card">${inner}</div></div>`;
 
-  if(gateStage === 'choose'){
-    document.querySelectorAll('[data-choose]').forEach(btn=>{
-      btn.addEventListener('click', ()=>{
-        gateSelectedManager = settings.managers.find(m=>m.id===btn.dataset.choose);
-        gateStage = 'login';
-        renderGate();
-      });
-    });
-    document.getElementById('gateNew').addEventListener('click', ()=>{ gateStage='create'; renderGate(); });
-  }
-
   if(gateStage === 'login'){
     const submit = async ()=>{
-      const val = document.getElementById('gateInput').value;
-      if(val === gateSelectedManager.passcode){
-        await signIn(gateSelectedManager.id);
-      }else{
-        renderGate('Incorrect passcode — try again.');
-      }
+      const email = document.getElementById('gateEmail').value.trim();
+      const password = document.getElementById('gatePassword').value;
+      if(!email || !password){ renderGate('Enter your email and password.'); return; }
+      const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+      if(error){ renderGate(error.message); return; }
+      await completeSignIn(data.user.id);
     };
     document.getElementById('gateSubmit').addEventListener('click', submit);
-    document.getElementById('gateInput').addEventListener('keydown', e=>{ if(e.key==='Enter') submit(); });
-    document.getElementById('gateBack').addEventListener('click', ()=>{ gateStage='choose'; renderGate(); });
+    document.getElementById('gatePassword').addEventListener('keydown', e=>{ if(e.key==='Enter') submit(); });
+    document.getElementById('gateNew').addEventListener('click', ()=>{ gateStage='create'; renderGate(); });
   }
 
   if(gateStage === 'create'){
     document.getElementById('gateCreate').addEventListener('click', async ()=>{
       const name = document.getElementById('gateName').value.trim();
-      const pass = document.getElementById('gateNewPasscode').value;
-      if(!name){ renderGate('Enter a name for this profile.'); return; }
-      if(!pass){ renderGate('Choose a passcode.'); return; }
-      const newManager = { id: uid(), name, passcode: pass };
-      settings.managers.push(newManager);
-      await storageSet('app-settings', settings);
-      await signIn(newManager.id);
+      const email = document.getElementById('gateEmail').value.trim();
+      const password = document.getElementById('gatePassword').value;
+      if(!name){ renderGate('Enter your name.'); return; }
+      if(!email || !password){ renderGate('Enter an email and password.'); return; }
+      if(password.length < 6){ renderGate('Password needs to be at least 6 characters.'); return; }
+      const { data, error } = await supabaseClient.auth.signUp({ email, password });
+      if(error){ renderGate(error.message); return; }
+      if(!data.session){
+        renderGate('Account created — check your email to confirm, then sign in.');
+        gateStage = 'login';
+        return;
+      }
+      await ensureOwnManagerProfile(name);
+      await completeSignIn(data.user.id);
     });
-    document.getElementById('gateBack').addEventListener('click', ()=>{ gateStage='choose'; renderGate(); });
+    document.getElementById('gateBack').addEventListener('click', ()=>{ gateStage='login'; renderGate(); });
   }
 }
 
-async function signIn(managerId){
-  currentManagerId = managerId;
+async function completeSignIn(userId){
+  currentManagerId = userId;
   authenticated = true;
   loading = true;
   render();
+  await ensureOwnManagerProfile();
+  await loadManagersList();
+  const admin = managersList.find(m=>m.is_admin);
+  await ensureSeedRoster(admin ? admin.user_id : userId);
   await loadRoster();
   loading = false;
   render();
 }
 
-function signOut(){
+async function signOut(){
+  await supabaseClient.auth.signOut();
   authenticated = false;
   currentManagerId = null;
   roster = [];
   attendanceCache = {};
   monthLoaded = {};
+  managersList = [];
   currentView = 'today';
-  gateStage = 'choose';
-  gateSelectedManager = null;
+  gateStage = 'login';
   renderGate();
 }
 
-/* ================= Board access settings (inside Roster tab) ================= */
+/* ================= Manager accounts panel (inside Roster tab) ================= */
 function renderAccessSettingsPanel(){
-  const me = settings.managers.find(m=>m.id===currentManagerId);
-  if(me.isAdmin){
+  const me = currentManagerRecord();
+  if(!me) return '';
+  if(me.is_admin){
     return `
       <div class="settings-panel">
         <label>Manager accounts</label>
-        ${settings.managers.map(m=>`
-          <div class="row" style="margin-bottom:8px;" data-mgr-row="${m.id}">
-            <span style="width:130px;font-size:13px;font-weight:600;">${escapeHtml(m.name)}${m.id===currentManagerId ? ' <span style="color:var(--ink-faint);font-weight:400;">(you)</span>' : ''}</span>
-            <input type="text" data-mgr-passcode="${m.id}" value="${escapeAttr(m.passcode)}">
-            <button class="btn btn-sm" data-mgr-save="${m.id}">Update passcode</button>
+        ${managersList.map(m=>`
+          <div class="row" style="margin-bottom:8px;">
+            <span style="width:160px;font-size:13px;font-weight:600;">${escapeHtml(m.name)}${m.user_id===currentManagerId ? ' <span style="color:var(--ink-faint);font-weight:400;">(you)</span>' : ''}</span>
+            <span style="font-size:12px;color:var(--ink-soft);width:110px;">${m.is_admin ? 'Admin' : 'Manager'}</span>
+            ${m.user_id!==currentManagerId ? `<button class="btn btn-sm" data-toggle-admin="${m.user_id}" data-currently="${m.is_admin}">${m.is_admin ? 'Remove admin' : 'Make admin'}</button>` : ''}
           </div>
         `).join('')}
-        <div class="hint" style="margin-top:8px;">Passcodes are a light gate to keep this link from being opened casually — not real access control. All managers share the same roster and attendance data. Only the Main Team account can reset other managers' passcodes.</div>
+        <div class="hint" style="margin-top:8px;">Real accounts now — each manager signs in with their own email and password. To reset someone's password, or to remove an account entirely, use your Supabase dashboard → Authentication → Users.</div>
       </div>
     `;
   }
   return `
     <div class="settings-panel">
-      <label>Your passcode (${escapeHtml(me.name)})</label>
-      <div class="row">
-        <input type="text" id="passcodeInput" value="${escapeAttr(me.passcode)}">
-        <button class="btn btn-sm" id="savePasscode">Update passcode</button>
-      </div>
-      <div class="hint" style="margin-top:8px;">This passcode is a light gate to keep the link from being opened casually — not real access control. If you're locked out, ask the Main Team account to reset it for you.</div>
+      <label>Your account</label>
+      <div class="hint">Signed in as ${escapeHtml(me.name)}. To change your password, use "Forgot password" on the sign-in screen, or ask an admin.</div>
     </div>
   `;
 }
 function wireAccessSettingsPanel(){
-  document.querySelectorAll('[data-mgr-save]').forEach(btn=>{
+  document.querySelectorAll('[data-toggle-admin]').forEach(btn=>{
     btn.addEventListener('click', async ()=>{
-      const id = btn.dataset.mgrSave;
-      const input = document.querySelector(`[data-mgr-passcode="${id}"]`);
-      const val = input.value.trim();
-      if(!val){ showToast('Passcode cannot be empty'); return; }
-      const m = settings.managers.find(x=>x.id===id);
-      m.passcode = val;
-      const ok = await storageSet('app-settings', settings);
-      showToast(ok ? `Passcode updated for ${m.name}` : 'Update failed — try again');
+      const targetId = btn.dataset.toggleAdmin;
+      const currentlyAdmin = btn.dataset.currently === 'true';
+      const { error } = await supabaseClient.rpc('set_manager_admin', { target_user_id: targetId, new_is_admin: !currentlyAdmin });
+      if(error){ showToast('Update failed — try again'); return; }
+      showToast('Updated');
+      await loadManagersList();
+      refresh();
     });
   });
-  const soloBtn = document.getElementById('savePasscode');
-  if(soloBtn){
-    soloBtn.addEventListener('click', async ()=>{
-      const val = document.getElementById('passcodeInput').value.trim();
-      if(!val){ showToast('Passcode cannot be empty'); return; }
-      const me = settings.managers.find(m=>m.id===currentManagerId);
-      me.passcode = val;
-      const ok = await storageSet('app-settings', settings);
-      showToast(ok ? 'Passcode updated' : 'Update failed — try again');
-    });
-  }
 }
 
 /* ================= Init ================= */
 (async function init(){
-  await loadSettings();
-  renderGate();
+  const { data: { session } } = await supabaseClient.auth.getSession();
+  if(session){
+    await completeSignIn(session.user.id);
+  }else{
+    renderGate();
+  }
+  supabaseClient.auth.onAuthStateChange((event)=>{
+    if(event === 'SIGNED_OUT'){ authenticated = false; currentManagerId = null; renderGate(); }
+  });
 })();
 </script>
 </body>
