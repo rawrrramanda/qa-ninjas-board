@@ -293,6 +293,7 @@
   .chat-channel-btn:hover{background:var(--accent-soft);}
   .chat-channel-btn.active{background:var(--accent);color:#fff;font-weight:600;}
   .chat-channel-btn .voice-count{margin-left:auto;font-family:'IBM Plex Mono';font-size:10.5px;opacity:0.8;}
+  .chat-mini-avatar{width:18px;height:18px;border-radius:50%;background:var(--accent-soft);color:var(--accent-dark);display:flex;align-items:center;justify-content:center;font-size:9.5px;font-weight:700;flex-shrink:0;}
   .chat-new-channel{padding:10px 12px;border-top:1px solid var(--border);margin-top:auto;}
   .chat-main{flex:1;display:flex;flex-direction:column;min-width:0;}
   .chat-header{padding:14px 18px;border-bottom:1px solid var(--border);font-family:'Space Grotesk';font-weight:600;font-size:14.5px;display:flex;align-items:center;justify-content:space-between;}
@@ -1729,14 +1730,22 @@ async function renderChat(main){
         <div class="chat-channels-group">Voice channels</div>
         ${voiceChannels.map(c=>{
           const occ = voiceChannelOccupants[c.id] || {};
-          const names = Object.values(occ).map(o=>o.name);
+          const entries = Object.entries(occ);
           return `
-          <button class="chat-channel-btn ${c.id===currentChannelId?'active':''}" data-channel="${c.id}" style="${names.length ? 'flex-direction:column;align-items:flex-start;height:auto;' : ''}">
+          <button class="chat-channel-btn ${c.id===currentChannelId?'active':''}" data-channel="${c.id}" style="${entries.length ? 'flex-direction:column;align-items:flex-start;height:auto;' : ''}">
             <div style="display:flex;align-items:center;gap:6px;width:100%;">
               <span>&#128266;</span><span>${escapeHtml(c.name)}</span>
               ${c.id===voiceChannelId ? `<span class="voice-count" style="margin-left:auto;">in call</span>` : ''}
             </div>
-            ${names.length ? `<div style="font-size:10.5px;opacity:0.8;padding-left:20px;margin-top:2px;overflow-wrap:anywhere;line-height:1.4;">${names.map(escapeHtml).join(', ')}</div>` : ''}
+            ${entries.length ? `<div style="width:100%;margin-top:3px;">
+              ${entries.map(([id,o])=>`
+                <div style="display:flex;align-items:center;gap:6px;padding:2px 0 2px 18px;">
+                  <span class="chat-mini-avatar">${escapeHtml(chatInitial(o.name))}</span>
+                  <span style="flex:1;font-size:11.5px;overflow-wrap:anywhere;">${escapeHtml(o.name)}${id===currentManagerId?' (you)':''}</span>
+                  ${o.muted ? `<span title="Muted" style="font-size:11px;flex-shrink:0;">&#128263;</span>` : ''}
+                </div>
+              `).join('')}
+            </div>` : ''}
           </button>
         `;}).join('')}
         <div class="chat-new-channel">
@@ -1861,6 +1870,15 @@ function renderVoiceRoom(){
   const occupants = voiceChannelOccupants[channel.id] || {};
   const participantIds = Object.keys(occupants);
 
+  // Defensive: re-wire the self speaking-indicator on every render, whatever
+  // the cause of any prior staleness (suspended context, disconnected node,
+  // a presence blip, a re-render replacing the DOM element it targets...).
+  // Cheap and idempotent, so just always do it rather than trying to prove
+  // exactly when it's needed.
+  if(inThisRoom && voiceLocalStream){
+    setupVoiceAnalyser(currentManagerId, voiceLocalStream);
+  }
+
   el.innerHTML = `
     <div class="chat-header">&#128266;&nbsp;${escapeHtml(channel.name)}${!channel.is_fixed ? `<button class="btn btn-sm btn-danger" id="deleteChannelBtn">Delete channel</button>` : ''}</div>
     <div class="voice-room">
@@ -1894,7 +1912,7 @@ function renderVoiceRoom(){
   const leaveBtn = document.getElementById('voiceLeaveBtn');
   if(leaveBtn) leaveBtn.addEventListener('click', ()=> runVoiceAction(async ()=>{ await leaveVoiceChannel(); renderVoiceRoom(); }));
   const muteBtn = document.getElementById('voiceMuteBtn');
-  if(muteBtn) muteBtn.addEventListener('click', ()=> runVoiceAction(async ()=>{ toggleVoiceMute(); renderVoiceRoom(); }));
+  if(muteBtn) muteBtn.addEventListener('click', ()=> runVoiceAction(async ()=>{ await toggleVoiceMute(); renderVoiceRoom(); }));
 }
 
 function exportMonthCsv(){
@@ -2467,26 +2485,39 @@ let voiceSpeakingInterval = null;
 
 function setupVoiceAnalyser(peerId, stream){
   if(!voiceAudioContext) voiceAudioContext = new (window.AudioContext || window.webkitAudioContext)();
+  if(voiceAudioContext.state === 'suspended') voiceAudioContext.resume().catch(()=>{});
   try{
+    if(voiceAnalysers[peerId] && voiceAnalysers[peerId].source){
+      try{ voiceAnalysers[peerId].source.disconnect(); }catch(e){}
+    }
     const source = voiceAudioContext.createMediaStreamSource(stream);
     const analyser = voiceAudioContext.createAnalyser();
     analyser.fftSize = 512;
     analyser.smoothingTimeConstant = 0.6;
     source.connect(analyser);
-    voiceAnalysers[peerId] = { analyser, dataArray: new Uint8Array(analyser.frequencyBinCount) };
+    voiceAnalysers[peerId] = { analyser, dataArray: new Uint8Array(analyser.frequencyBinCount), source };
   }catch(e){ console.error('voice analyser setup failed', e); }
 }
 function startVoiceSpeakingLoop(){
   if(voiceSpeakingInterval) return;
   voiceSpeakingInterval = setInterval(()=>{
+    // Browsers frequently auto-suspend the audio processing pipeline (power
+    // saving, backgrounding, etc.) — this is likely why the speaking ring was
+    // silently going dead over time. Self-heal every tick rather than assuming
+    // it stays running once started.
+    if(voiceAudioContext && voiceAudioContext.state === 'suspended'){
+      voiceAudioContext.resume().catch(()=>{});
+    }
     Object.entries(voiceAnalysers).forEach(([peerId, a])=>{
-      a.analyser.getByteFrequencyData(a.dataArray);
-      let sum = 0;
-      for(let i=0;i<a.dataArray.length;i++) sum += a.dataArray[i];
-      const avg = sum / a.dataArray.length;
-      const isSelfMuted = peerId === currentManagerId && voiceMuted;
-      const el = document.getElementById('voice-avatar-' + peerId);
-      if(el) el.classList.toggle('speaking', avg > 12 && !isSelfMuted);
+      try{
+        a.analyser.getByteFrequencyData(a.dataArray);
+        let sum = 0;
+        for(let i=0;i<a.dataArray.length;i++) sum += a.dataArray[i];
+        const avg = sum / a.dataArray.length;
+        const isSelfMuted = peerId === currentManagerId && voiceMuted;
+        const el = document.getElementById('voice-avatar-' + peerId);
+        if(el) el.classList.toggle('speaking', avg > 12 && !isSelfMuted);
+      }catch(e){ /* one bad read shouldn't kill the whole loop */ }
     });
   }, 150);
 }
@@ -2520,13 +2551,18 @@ async function joinVoiceChannel(channelId){
   const me = currentManagerRecord();
   const myName = me ? me.name : 'Manager';
 
-  voiceRealtimeChannel = supabaseClient.channel('voice_' + channelId, {
+  const thisVoiceChannel = supabaseClient.channel('voice_' + channelId, {
     config: { presence: { key: currentManagerId } }
   });
+  voiceRealtimeChannel = thisVoiceChannel;
 
-  voiceRealtimeChannel
+  thisVoiceChannel
     .on('presence', { event: 'sync' }, ()=>{
-      const state = voiceRealtimeChannel.presenceState();
+      // Use the captured local reference, not the global — the global gets
+      // set to null the moment leaveVoiceChannel() starts, but this event
+      // can still arrive slightly after that (it's a network round-trip),
+      // which was crashing here before.
+      const state = thisVoiceChannel.presenceState();
       const occ = {};
       Object.keys(state).forEach(key=>{
         const meta = state[key][0];
@@ -2550,7 +2586,8 @@ async function joinVoiceChannel(channelId){
     })
     .subscribe(async (status)=>{
       if(status === 'SUBSCRIBED'){
-        await voiceRealtimeChannel.track({ name: myName, muted: voiceMuted });
+        try{ await thisVoiceChannel.track({ name: myName, muted: voiceMuted }); }
+        catch(e){ console.error('voice track failed', e); }
       }
     });
 }
@@ -2559,25 +2596,41 @@ async function leaveVoiceChannel(){
   if(!voiceChannelId) return;
   const leftChannelId = voiceChannelId;
   const channelToRemove = voiceRealtimeChannel;
+  const peersToClose = voicePeers;
+  const streamToStop = voiceLocalStream;
 
-  // Clear all local state up front — the call is considered "left" from this
-  // point regardless of whether the network-side cleanup below succeeds, so
-  // the UI/buttons never get stuck waiting on it.
-  Object.keys(voicePeers).forEach(closePeerConnection);
-  stopVoiceSpeakingLoop();
-  if(voiceLocalStream){ voiceLocalStream.getTracks().forEach(t=>t.stop()); voiceLocalStream = null; }
+  // Clear only what the UI actually reads — instantly, synchronously — so
+  // the button/room updates the moment you click, before any real teardown
+  // work happens at all.
+  voicePeers = {};
   voiceRealtimeChannel = null;
   voiceChannelId = null;
+  voiceLocalStream = null;
   voiceChannelOccupants[leftChannelId] = {};
   voiceMuted = false;
+  subscribeVoicePresenceObserver(leftChannelId);
+
+  // Everything below is real work (closing connections, releasing the mic,
+  // telling the server) but none of it affects what's on screen — deferred
+  // so it can't delay the visual update even by a frame.
+  setTimeout(()=>{
+    Object.keys(peersToClose).forEach(peerId=>{
+      const pc = peersToClose[peerId];
+      if(pc){ try{ pc.close(); }catch(e){} }
+      const audioEl = document.getElementById('voice-audio-' + peerId);
+      if(audioEl) audioEl.remove();
+      delete voiceAnalysers[peerId];
+    });
+    stopVoiceSpeakingLoop();
+    if(streamToStop){ streamToStop.getTracks().forEach(t=>{ try{ t.stop(); }catch(e){} }); }
+  }, 0);
 
   if(channelToRemove){
-    try{ await channelToRemove.untrack(); }catch(e){ console.error('voice untrack failed', e); }
-    try{ supabaseClient.removeChannel(channelToRemove); }catch(e){ console.error('voice removeChannel failed', e); }
+    (async ()=>{
+      try{ await channelToRemove.untrack(); }catch(e){ console.error('voice untrack failed', e); }
+      try{ supabaseClient.removeChannel(channelToRemove); }catch(e){ console.error('voice removeChannel failed', e); }
+    })();
   }
-
-  // Resume passive observation of the channel we just left, so its sidebar count stays live.
-  subscribeVoicePresenceObserver(leftChannelId);
 }
 
 function sendVoiceSignal(to, data){
@@ -2592,7 +2645,10 @@ function createPeerConnection(peerId, isInitiator){
   const pc = new RTCPeerConnection(RTC_CONFIG);
   voicePeers[peerId] = pc;
 
-  voiceLocalStream.getTracks().forEach(track => pc.addTrack(track, voiceLocalStream));
+  voiceLocalStream.getTracks().forEach(track => {
+    const sender = pc.addTrack(track, voiceLocalStream);
+    if(voiceMuted) sender.replaceTrack(null).catch(()=>{});
+  });
 
   pc.onicecandidate = (e)=>{
     if(e.candidate) sendVoiceSignal(peerId, { kind:'ice', candidate: e.candidate });
@@ -2645,10 +2701,26 @@ function closePeerConnection(peerId){
   if(voiceChannelId && voiceChannelOccupants[voiceChannelId]) delete voiceChannelOccupants[voiceChannelId][peerId];
 }
 
-function toggleVoiceMute(){
+async function toggleVoiceMute(){
   if(!voiceLocalStream) return;
+  if(voiceAudioContext && voiceAudioContext.state === 'suspended'){
+    try{ await voiceAudioContext.resume(); }catch(e){}
+  }
   voiceMuted = !voiceMuted;
-  voiceLocalStream.getAudioTracks().forEach(t=> t.enabled = !voiceMuted);
+
+  // Mute/unmute by detaching or reattaching the SAME original track from each
+  // connection's sender — never disabling, stopping, or re-requesting the
+  // microphone itself. This is the reliable way to do this in WebRTC; toggling
+  // track.enabled (or re-acquiring the mic) is what was getting stuck silent.
+  const track = voiceMuted ? null : voiceLocalStream.getAudioTracks()[0];
+  await Promise.all(Object.values(voicePeers).map(async pc=>{
+    const sender = pc.getSenders()[0]; // audio-only calls — always exactly one sender
+    if(sender){
+      try{ await sender.replaceTrack(track); }
+      catch(e){ console.error('mute replaceTrack failed', e); }
+    }
+  }));
+
   // Let everyone else in the call see the updated mute state, not just yourself.
   if(voiceRealtimeChannel){
     const me = currentManagerRecord();
