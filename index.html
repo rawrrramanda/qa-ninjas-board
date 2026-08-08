@@ -474,7 +474,8 @@ let voiceRealtimeChannel = null; // the Supabase Realtime channel used for signa
 let voicePeers = {};             // peerId -> RTCPeerConnection
 let voiceLocalStream = null;
 let voiceMuted = false;
-let voiceParticipants = {};      // peerId -> {name}
+let voiceChannelOccupants = {};  // channelId -> { peerId: {name} } — who's in each voice channel, whether you've joined it or not
+let voiceObserverChannels = {};  // channelId -> Realtime channel object, for passively watching occupancy without joining audio
 
 const STATUSES = [
   {code:'P', label:'Present'},
@@ -1705,6 +1706,7 @@ async function renderChat(main){
   await loadChannels();
   await ensureDefaultChannelsOnce();
   if(channels.length === 0) await loadChannels(); // pick up the just-seeded defaults
+  subscribeAllVoicePresenceObservers();
 
   if(!currentChannelId || !channels.some(c=>c.id===currentChannelId)){
     const lobby = channels.find(c=>c.type==='text');
@@ -1725,9 +1727,18 @@ async function renderChat(main){
           <button class="chat-channel-btn ${c.id===currentChannelId?'active':''}" data-channel="${c.id}">#&nbsp;${escapeHtml(c.name)}</button>
         `).join('')}
         <div class="chat-channels-group">Voice channels</div>
-        ${voiceChannels.map(c=>`
-          <button class="chat-channel-btn ${c.id===currentChannelId?'active':''}" data-channel="${c.id}">&#128266;&nbsp;${escapeHtml(c.name)}${c.id===voiceChannelId ? ` <span class="voice-count">·&nbsp;in call</span>` : ''}</button>
-        `).join('')}
+        ${voiceChannels.map(c=>{
+          const occ = voiceChannelOccupants[c.id] || {};
+          const names = Object.values(occ).map(o=>o.name);
+          return `
+          <button class="chat-channel-btn ${c.id===currentChannelId?'active':''}" data-channel="${c.id}" style="${names.length ? 'flex-direction:column;align-items:flex-start;height:auto;' : ''}">
+            <div style="display:flex;align-items:center;gap:6px;width:100%;">
+              <span>&#128266;</span><span>${escapeHtml(c.name)}</span>
+              ${c.id===voiceChannelId ? `<span class="voice-count" style="margin-left:auto;">in call</span>` : ''}
+            </div>
+            ${names.length ? `<div style="font-size:10.5px;opacity:0.8;padding-left:20px;margin-top:2px;overflow-wrap:anywhere;line-height:1.4;">${names.map(escapeHtml).join(', ')}</div>` : ''}
+          </button>
+        `;}).join('')}
         <div class="chat-new-channel">
           <div class="upload-actions" style="flex-direction:column;align-items:stretch;gap:6px;">
             <input type="text" id="newChannelName" placeholder="New channel name" style="font-size:12.5px;padding:7px 9px;border-radius:6px;border:1px solid var(--border);">
@@ -1847,14 +1858,15 @@ function renderVoiceRoom(){
   const channel = channels.find(c=>c.id===currentChannelId);
   if(!channel) return;
   const inThisRoom = voiceChannelId === channel.id;
-  const participantIds = Object.keys(voiceParticipants);
+  const occupants = voiceChannelOccupants[channel.id] || {};
+  const participantIds = Object.keys(occupants);
 
   el.innerHTML = `
     <div class="chat-header">&#128266;&nbsp;${escapeHtml(channel.name)}${!channel.is_fixed ? `<button class="btn btn-sm btn-danger" id="deleteChannelBtn">Delete channel</button>` : ''}</div>
     <div class="voice-room">
       <div class="voice-participants">
         ${inThisRoom && participantIds.length ? participantIds.map(id=>`
-          <div class="voice-avatar"><div class="circle">${escapeHtml(chatInitial(voiceParticipants[id].name))}</div><div class="vname">${escapeHtml(voiceParticipants[id].name)}${id===currentManagerId?' (you)':''}</div></div>
+          <div class="voice-avatar" id="voice-avatar-${id}"><div class="circle">${escapeHtml(chatInitial(occupants[id].name))}</div><div class="vname">${occupants[id].muted ? '&#128263; ' : ''}${escapeHtml(occupants[id].name)}${id===currentManagerId?' (you)':''}</div></div>
         `).join('') : `<div class="hint">${inThisRoom ? "You're the only one here right now." : 'Nobody in this call yet.'}</div>`}
       </div>
       <div class="voice-controls">
@@ -1878,11 +1890,11 @@ function renderVoiceRoom(){
   }
 
   const joinBtn = document.getElementById('voiceJoinBtn');
-  if(joinBtn) joinBtn.addEventListener('click', async ()=>{ await joinVoiceChannel(channel.id); refresh(); });
+  if(joinBtn) joinBtn.addEventListener('click', ()=> runVoiceAction(async ()=>{ await joinVoiceChannel(channel.id); renderVoiceRoom(); }));
   const leaveBtn = document.getElementById('voiceLeaveBtn');
-  if(leaveBtn) leaveBtn.addEventListener('click', async ()=>{ await leaveVoiceChannel(); refresh(); });
+  if(leaveBtn) leaveBtn.addEventListener('click', ()=> runVoiceAction(async ()=>{ await leaveVoiceChannel(); renderVoiceRoom(); }));
   const muteBtn = document.getElementById('voiceMuteBtn');
-  if(muteBtn) muteBtn.addEventListener('click', ()=>{ toggleVoiceMute(); refresh(); });
+  if(muteBtn) muteBtn.addEventListener('click', ()=> runVoiceAction(async ()=>{ toggleVoiceMute(); renderVoiceRoom(); }));
 }
 
 function exportMonthCsv(){
@@ -2410,6 +2422,80 @@ async function sendChatMessage(channelId, body, file){
    channel — no separate signaling server needed. */
 const RTC_CONFIG = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
+// Prevents overlapping join/leave/mute actions — clicking mute rapidly (or
+// clicking leave while a mute toggle is still in flight) was racing against
+// itself, occasionally corrupting the connection and leaving the leave
+// button unresponsive. Only one voice action runs at a time now; the rest
+// are quietly ignored rather than queued, which is the right call for
+// something like a mute button.
+let voiceActionBusy = false;
+async function runVoiceAction(fn){
+  if(voiceActionBusy) return;
+  voiceActionBusy = true;
+  try{ await fn(); }
+  catch(e){ console.error('voice action failed', e); }
+  finally{ voiceActionBusy = false; }
+}
+
+// Watches a voice channel's occupancy WITHOUT joining audio — lets the sidebar
+// show who's in every voice channel, not just the one you've joined. Since we
+// never call .track() here, we never actually appear as a participant.
+function subscribeVoicePresenceObserver(channelId){
+  if(voiceObserverChannels[channelId]) return;
+  if(voiceChannelId === channelId) return; // already have full presence via the joined channel
+  const ch = supabaseClient.channel('voice_' + channelId, { config: { presence: { key: 'observer_' + uid() } } });
+  ch.on('presence', { event: 'sync' }, ()=>{
+    const state = ch.presenceState();
+    const occ = {};
+    Object.keys(state).forEach(key=>{
+      occ[key] = { name: state[key][0].name, muted: !!state[key][0].muted };
+    });
+    voiceChannelOccupants[channelId] = occ;
+    if(currentView === 'chat') requestRealtimeRefresh();
+  });
+  ch.subscribe();
+  voiceObserverChannels[channelId] = ch;
+}
+function subscribeAllVoicePresenceObservers(){
+  channels.filter(c=>c.type==='voice').forEach(c=> subscribeVoicePresenceObserver(c.id));
+}
+
+/* ---- Speaking indicator: lightweight audio-level polling per participant ---- */
+let voiceAudioContext = null;
+let voiceAnalysers = {};        // peerId -> { analyser, dataArray }
+let voiceSpeakingInterval = null;
+
+function setupVoiceAnalyser(peerId, stream){
+  if(!voiceAudioContext) voiceAudioContext = new (window.AudioContext || window.webkitAudioContext)();
+  try{
+    const source = voiceAudioContext.createMediaStreamSource(stream);
+    const analyser = voiceAudioContext.createAnalyser();
+    analyser.fftSize = 512;
+    analyser.smoothingTimeConstant = 0.6;
+    source.connect(analyser);
+    voiceAnalysers[peerId] = { analyser, dataArray: new Uint8Array(analyser.frequencyBinCount) };
+  }catch(e){ console.error('voice analyser setup failed', e); }
+}
+function startVoiceSpeakingLoop(){
+  if(voiceSpeakingInterval) return;
+  voiceSpeakingInterval = setInterval(()=>{
+    Object.entries(voiceAnalysers).forEach(([peerId, a])=>{
+      a.analyser.getByteFrequencyData(a.dataArray);
+      let sum = 0;
+      for(let i=0;i<a.dataArray.length;i++) sum += a.dataArray[i];
+      const avg = sum / a.dataArray.length;
+      const isSelfMuted = peerId === currentManagerId && voiceMuted;
+      const el = document.getElementById('voice-avatar-' + peerId);
+      if(el) el.classList.toggle('speaking', avg > 12 && !isSelfMuted);
+    });
+  }, 150);
+}
+function stopVoiceSpeakingLoop(){
+  if(voiceSpeakingInterval){ clearInterval(voiceSpeakingInterval); voiceSpeakingInterval = null; }
+  voiceAnalysers = {};
+  if(voiceAudioContext){ voiceAudioContext.close().catch(()=>{}); voiceAudioContext = null; }
+}
+
 async function joinVoiceChannel(channelId){
   if(voiceChannelId){ await leaveVoiceChannel(); }
   try{
@@ -2418,9 +2504,18 @@ async function joinVoiceChannel(channelId){
     showToast('Could not access microphone — check browser permissions');
     return;
   }
+  // Give up the passive observer for this channel — the joined connection below replaces it.
+  if(voiceObserverChannels[channelId]){
+    supabaseClient.removeChannel(voiceObserverChannels[channelId]);
+    delete voiceObserverChannels[channelId];
+  }
+
   voiceChannelId = channelId;
   voicePeers = {};
-  voiceParticipants = {};
+  voiceChannelOccupants[channelId] = {};
+  voiceMuted = false;
+  setupVoiceAnalyser(currentManagerId, voiceLocalStream);
+  startVoiceSpeakingLoop();
 
   const me = currentManagerRecord();
   const myName = me ? me.name : 'Manager';
@@ -2432,11 +2527,12 @@ async function joinVoiceChannel(channelId){
   voiceRealtimeChannel
     .on('presence', { event: 'sync' }, ()=>{
       const state = voiceRealtimeChannel.presenceState();
-      voiceParticipants = {};
+      const occ = {};
       Object.keys(state).forEach(key=>{
         const meta = state[key][0];
-        voiceParticipants[key] = { name: meta.name };
+        occ[key] = { name: meta.name, muted: !!meta.muted };
       });
+      voiceChannelOccupants[channelId] = occ;
       if(currentView === 'chat') renderVoiceRoom();
     })
     .on('presence', { event: 'join' }, ({ key, newPresences })=>{
@@ -2454,23 +2550,41 @@ async function joinVoiceChannel(channelId){
     })
     .subscribe(async (status)=>{
       if(status === 'SUBSCRIBED'){
-        await voiceRealtimeChannel.track({ name: myName });
+        await voiceRealtimeChannel.track({ name: myName, muted: voiceMuted });
       }
     });
 }
 
 async function leaveVoiceChannel(){
   if(!voiceChannelId) return;
+  const leftChannelId = voiceChannelId;
+  const channelToRemove = voiceRealtimeChannel;
+
+  // Clear all local state up front — the call is considered "left" from this
+  // point regardless of whether the network-side cleanup below succeeds, so
+  // the UI/buttons never get stuck waiting on it.
   Object.keys(voicePeers).forEach(closePeerConnection);
+  stopVoiceSpeakingLoop();
   if(voiceLocalStream){ voiceLocalStream.getTracks().forEach(t=>t.stop()); voiceLocalStream = null; }
-  if(voiceRealtimeChannel){ await voiceRealtimeChannel.untrack(); supabaseClient.removeChannel(voiceRealtimeChannel); voiceRealtimeChannel = null; }
+  voiceRealtimeChannel = null;
   voiceChannelId = null;
-  voiceParticipants = {};
+  voiceChannelOccupants[leftChannelId] = {};
   voiceMuted = false;
+
+  if(channelToRemove){
+    try{ await channelToRemove.untrack(); }catch(e){ console.error('voice untrack failed', e); }
+    try{ supabaseClient.removeChannel(channelToRemove); }catch(e){ console.error('voice removeChannel failed', e); }
+  }
+
+  // Resume passive observation of the channel we just left, so its sidebar count stays live.
+  subscribeVoicePresenceObserver(leftChannelId);
 }
 
 function sendVoiceSignal(to, data){
-  voiceRealtimeChannel.send({ type:'broadcast', event:'signal', payload: { from: currentManagerId, to, ...data } });
+  if(!voiceRealtimeChannel) return;
+  try{
+    voiceRealtimeChannel.send({ type:'broadcast', event:'signal', payload: { from: currentManagerId, to, ...data } });
+  }catch(e){ console.error('voice signal send failed', e); }
 }
 
 function createPeerConnection(peerId, isInitiator){
@@ -2492,6 +2606,7 @@ function createPeerConnection(peerId, isInitiator){
       document.body.appendChild(audioEl);
     }
     audioEl.srcObject = e.streams[0];
+    setupVoiceAnalyser(peerId, e.streams[0]);
   };
 
   if(isInitiator){
@@ -2526,13 +2641,21 @@ function closePeerConnection(peerId){
   if(pc){ pc.close(); delete voicePeers[peerId]; }
   const audioEl = document.getElementById('voice-audio-' + peerId);
   if(audioEl) audioEl.remove();
-  delete voiceParticipants[peerId];
+  delete voiceAnalysers[peerId];
+  if(voiceChannelId && voiceChannelOccupants[voiceChannelId]) delete voiceChannelOccupants[voiceChannelId][peerId];
 }
 
 function toggleVoiceMute(){
   if(!voiceLocalStream) return;
   voiceMuted = !voiceMuted;
   voiceLocalStream.getAudioTracks().forEach(t=> t.enabled = !voiceMuted);
+  // Let everyone else in the call see the updated mute state, not just yourself.
+  if(voiceRealtimeChannel){
+    const me = currentManagerRecord();
+    try{
+      voiceRealtimeChannel.track({ name: me ? me.name : 'Manager', muted: voiceMuted });
+    }catch(e){ console.error('mute broadcast failed', e); }
+  }
 }
 
 /* ================= Access gate (real Supabase Auth) ================= */
@@ -2687,6 +2810,7 @@ function setupRealtimeSubscriptions(){
     .channel('channels_changes')
     .on('postgres_changes', { event: '*', schema: 'public', table: 'channels' }, async ()=>{
       await loadChannels();
+      subscribeAllVoicePresenceObservers();
       if(currentView === 'chat') requestRealtimeRefresh();
     })
     .subscribe();
@@ -2732,6 +2856,8 @@ async function signOut(){
   chatMessagesSubscribed = null;
   chatMsgRTChannel = null;
   importReviewCache = null;
+  voiceChannelOccupants = {};
+  voiceObserverChannels = {};
   renderGate();
 }
 
