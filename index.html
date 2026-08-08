@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="https://download.agora.io/sdk/release/AgoraRTC_N.js"></script>
 <style>
   :root{
     --bg-app:#F4F5F1;
@@ -471,9 +472,7 @@ const CHAT_BUCKET = 'chat-attachments';
 
 // Voice channel state
 let voiceChannelId = null;       // which voice channel (if any) we're currently in
-let voiceRealtimeChannel = null; // the Supabase Realtime channel used for signaling+presence
-let voicePeers = {};             // peerId -> RTCPeerConnection
-let voiceLocalStream = null;
+let voiceRealtimeChannel = null; // Supabase presence channel — sidebar occupancy display only, not the audio itself
 let voiceMuted = false;
 let voiceChannelOccupants = {};  // channelId -> { peerId: {name} } — who's in each voice channel, whether you've joined it or not
 let voiceObserverChannels = {};  // channelId -> Realtime channel object, for passively watching occupancy without joining audio
@@ -1870,15 +1869,6 @@ function renderVoiceRoom(){
   const occupants = voiceChannelOccupants[channel.id] || {};
   const participantIds = Object.keys(occupants);
 
-  // Defensive: re-wire the self speaking-indicator on every render, whatever
-  // the cause of any prior staleness (suspended context, disconnected node,
-  // a presence blip, a re-render replacing the DOM element it targets...).
-  // Cheap and idempotent, so just always do it rather than trying to prove
-  // exactly when it's needed.
-  if(inThisRoom && voiceLocalStream){
-    setupVoiceAnalyser(currentManagerId, voiceLocalStream);
-  }
-
   el.innerHTML = `
     <div class="chat-header">&#128266;&nbsp;${escapeHtml(channel.name)}${!channel.is_fixed ? `<button class="btn btn-sm btn-danger" id="deleteChannelBtn">Delete channel</button>` : ''}</div>
     <div class="voice-room">
@@ -2432,13 +2422,12 @@ async function sendChatMessage(channelId, body, file){
   return true;
 }
 
-/* ================= Team Chat: voice channels (P2P WebRTC mesh) =================
-   Free peer-to-peer audio using a public STUN server only (no TURN relay) —
-   solid for small calls, may occasionally fail to connect for someone on a
-   very restrictive network, per the agreed tradeoff. Signaling (who's joining,
-   offers/answers/ICE candidates) rides on a Supabase Realtime broadcast+presence
-   channel — no separate signaling server needed. */
-const RTC_CONFIG = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+/* ================= Team Chat: voice channels (Agora) =================
+   Audio routes through Agora's managed relay infrastructure rather than
+   connecting browsers directly to each other — this is what fixed the
+   NAT/network-degradation issues the original free peer-to-peer approach
+   was hitting. Presence (who's in which channel, for the sidebar) still
+   rides on lightweight Supabase Realtime, unrelated to the audio itself. */
 
 // Prevents overlapping join/leave/mute actions — clicking mute rapidly (or
 // clicking leave while a mute toggle is still in flight) was racing against
@@ -2478,79 +2467,84 @@ function subscribeAllVoicePresenceObservers(){
   channels.filter(c=>c.type==='voice').forEach(c=> subscribeVoicePresenceObserver(c.id));
 }
 
-/* ---- Speaking indicator: lightweight audio-level polling per participant ---- */
-let voiceAudioContext = null;
-let voiceAnalysers = {};        // peerId -> { analyser, dataArray }
-let voiceSpeakingInterval = null;
-
-function setupVoiceAnalyser(peerId, stream){
-  if(!voiceAudioContext) voiceAudioContext = new (window.AudioContext || window.webkitAudioContext)();
-  if(voiceAudioContext.state === 'suspended') voiceAudioContext.resume().catch(()=>{});
-  try{
-    if(voiceAnalysers[peerId] && voiceAnalysers[peerId].source){
-      try{ voiceAnalysers[peerId].source.disconnect(); }catch(e){}
-    }
-    const source = voiceAudioContext.createMediaStreamSource(stream);
-    const analyser = voiceAudioContext.createAnalyser();
-    analyser.fftSize = 512;
-    analyser.smoothingTimeConstant = 0.6;
-    source.connect(analyser);
-    voiceAnalysers[peerId] = { analyser, dataArray: new Uint8Array(analyser.frequencyBinCount), source };
-  }catch(e){ console.error('voice analyser setup failed', e); }
-}
-function startVoiceSpeakingLoop(){
-  if(voiceSpeakingInterval) return;
-  voiceSpeakingInterval = setInterval(()=>{
-    // Browsers frequently auto-suspend the audio processing pipeline (power
-    // saving, backgrounding, etc.) — this is likely why the speaking ring was
-    // silently going dead over time. Self-heal every tick rather than assuming
-    // it stays running once started.
-    if(voiceAudioContext && voiceAudioContext.state === 'suspended'){
-      voiceAudioContext.resume().catch(()=>{});
-    }
-    Object.entries(voiceAnalysers).forEach(([peerId, a])=>{
-      try{
-        a.analyser.getByteFrequencyData(a.dataArray);
-        let sum = 0;
-        for(let i=0;i<a.dataArray.length;i++) sum += a.dataArray[i];
-        const avg = sum / a.dataArray.length;
-        const isSelfMuted = peerId === currentManagerId && voiceMuted;
-        const el = document.getElementById('voice-avatar-' + peerId);
-        if(el) el.classList.toggle('speaking', avg > 12 && !isSelfMuted);
-      }catch(e){ /* one bad read shouldn't kill the whole loop */ }
-    });
-  }, 150);
-}
-function stopVoiceSpeakingLoop(){
-  if(voiceSpeakingInterval){ clearInterval(voiceSpeakingInterval); voiceSpeakingInterval = null; }
-  voiceAnalysers = {};
-  if(voiceAudioContext){ voiceAudioContext.close().catch(()=>{}); voiceAudioContext = null; }
-}
+/* ---- Local audio via Agora — replaces the direct WebRTC mesh. Actual audio
+   now routes through Agora's managed relay infrastructure instead of
+   connecting browsers directly to each other, which is what fixes the
+   NAT/network-degradation issues the P2P approach was hitting. Speaking
+   detection and mute are both handled through Agora's own APIs, which are
+   built and tested specifically for this, rather than raw browser audio
+   APIs that turned out to have real edge-case bugs. ---- */
+let agoraClient = null;
+let agoraLocalAudioTrack = null;
+let agoraRemoteUsers = {};   // uid -> Agora user object
 
 async function joinVoiceChannel(channelId){
   if(voiceChannelId){ await leaveVoiceChannel(); }
+
+  let tokenData;
   try{
-    voiceLocalStream = await navigator.mediaDevices.getUserMedia({ audio:true });
+    const { data, error } = await supabaseClient.functions.invoke('agora-token', { body: { channelName: channelId } });
+    if(error || !data || data.error) throw new Error((data && data.error) || (error && error.message) || 'token request failed');
+    tokenData = data;
   }catch(e){
-    showToast('Could not access microphone — check browser permissions');
+    console.error('agora token request failed', e);
+    showToast('Could not start voice call — check console');
     return;
   }
-  // Give up the passive observer for this channel — the joined connection below replaces it.
+
+  // Give up the passive observer for this channel — the joined presence below replaces it.
   if(voiceObserverChannels[channelId]){
     supabaseClient.removeChannel(voiceObserverChannels[channelId]);
     delete voiceObserverChannels[channelId];
   }
 
   voiceChannelId = channelId;
-  voicePeers = {};
   voiceChannelOccupants[channelId] = {};
   voiceMuted = false;
-  setupVoiceAnalyser(currentManagerId, voiceLocalStream);
-  startVoiceSpeakingLoop();
+  agoraRemoteUsers = {};
 
+  agoraClient = AgoraRTC.createClient({ mode: 'rtc', codec: 'vp8' });
+
+  agoraClient.on('user-published', async (user, mediaType)=>{
+    if(mediaType !== 'audio') return;
+    try{
+      await agoraClient.subscribe(user, mediaType);
+      agoraRemoteUsers[user.uid] = user;
+      user.audioTrack.play();
+    }catch(e){ console.error('agora subscribe failed', e); }
+  });
+  agoraClient.on('user-unpublished', (user)=>{ delete agoraRemoteUsers[user.uid]; });
+  agoraClient.on('user-left', (user)=>{ delete agoraRemoteUsers[user.uid]; });
+
+  // Speaking indicator, driven by Agora's own volume metering rather than a
+  // hand-rolled Web Audio analyser — sidesteps the audio-context-suspension
+  // issues that kept breaking the self-view ring.
+  agoraClient.enableAudioVolumeIndicator();
+  agoraClient.on('volume-indicator', (volumes)=>{
+    volumes.forEach(v=>{
+      const isSelfMuted = v.uid === currentManagerId && voiceMuted;
+      const el = document.getElementById('voice-avatar-' + v.uid);
+      if(el) el.classList.toggle('speaking', v.level > 12 && !isSelfMuted);
+    });
+  });
+
+  try{
+    await agoraClient.join(tokenData.appId, channelId, tokenData.token, currentManagerId);
+    agoraLocalAudioTrack = await AgoraRTC.createMicrophoneAudioTrack();
+    await agoraClient.publish([agoraLocalAudioTrack]);
+  }catch(e){
+    console.error('agora join failed', e);
+    showToast('Could not join voice call — check microphone permissions');
+    voiceChannelId = null;
+    agoraClient = null;
+    return;
+  }
+
+  // Presence here is purely for the sidebar "who's in this channel" display —
+  // unrelated to Agora, same lightweight system used for channels you
+  // haven't joined at all.
   const me = currentManagerRecord();
   const myName = me ? me.name : 'Manager';
-
   const thisVoiceChannel = supabaseClient.channel('voice_' + channelId, {
     config: { presence: { key: currentManagerId } }
   });
@@ -2558,10 +2552,6 @@ async function joinVoiceChannel(channelId){
 
   thisVoiceChannel
     .on('presence', { event: 'sync' }, ()=>{
-      // Use the captured local reference, not the global — the global gets
-      // set to null the moment leaveVoiceChannel() starts, but this event
-      // can still arrive slightly after that (it's a network round-trip),
-      // which was crashing here before.
       const state = thisVoiceChannel.presenceState();
       const occ = {};
       Object.keys(state).forEach(key=>{
@@ -2571,23 +2561,10 @@ async function joinVoiceChannel(channelId){
       voiceChannelOccupants[channelId] = occ;
       if(currentView === 'chat') renderVoiceRoom();
     })
-    .on('presence', { event: 'join' }, ({ key, newPresences })=>{
-      if(key === currentManagerId) return;
-      // New peer announced themselves — if we were already here, initiate a connection to them.
-      createPeerConnection(key, true);
-    })
-    .on('presence', { event: 'leave' }, ({ key })=>{
-      closePeerConnection(key);
-      if(currentView === 'chat') renderVoiceRoom();
-    })
-    .on('broadcast', { event: 'signal' }, ({ payload })=>{
-      if(payload.to !== currentManagerId) return;
-      handleVoiceSignal(payload);
-    })
     .subscribe(async (status)=>{
       if(status === 'SUBSCRIBED'){
         try{ await thisVoiceChannel.track({ name: myName, muted: voiceMuted }); }
-        catch(e){ console.error('voice track failed', e); }
+        catch(e){ console.error('voice presence track failed', e); }
       }
     });
 }
@@ -2595,131 +2572,50 @@ async function joinVoiceChannel(channelId){
 async function leaveVoiceChannel(){
   if(!voiceChannelId) return;
   const leftChannelId = voiceChannelId;
-  const channelToRemove = voiceRealtimeChannel;
-  const peersToClose = voicePeers;
-  const streamToStop = voiceLocalStream;
+  const presenceChannel = voiceRealtimeChannel;
+  const client = agoraClient;
+  const localTrack = agoraLocalAudioTrack;
 
   // Clear only what the UI actually reads — instantly, synchronously — so
   // the button/room updates the moment you click, before any real teardown
   // work happens at all.
-  voicePeers = {};
   voiceRealtimeChannel = null;
   voiceChannelId = null;
-  voiceLocalStream = null;
+  agoraClient = null;
+  agoraLocalAudioTrack = null;
+  agoraRemoteUsers = {};
   voiceChannelOccupants[leftChannelId] = {};
   voiceMuted = false;
   subscribeVoicePresenceObserver(leftChannelId);
 
-  // Everything below is real work (closing connections, releasing the mic,
-  // telling the server) but none of it affects what's on screen — deferred
-  // so it can't delay the visual update even by a frame.
-  setTimeout(()=>{
-    Object.keys(peersToClose).forEach(peerId=>{
-      const pc = peersToClose[peerId];
-      if(pc){ try{ pc.close(); }catch(e){} }
-      const audioEl = document.getElementById('voice-audio-' + peerId);
-      if(audioEl) audioEl.remove();
-      delete voiceAnalysers[peerId];
-    });
-    stopVoiceSpeakingLoop();
-    if(streamToStop){ streamToStop.getTracks().forEach(t=>{ try{ t.stop(); }catch(e){} }); }
+  // Real teardown (closing the Agora connection, releasing the mic) happens
+  // right after, in the background — deferred so it can't delay the visual
+  // update even by a frame.
+  setTimeout(async ()=>{
+    try{
+      if(localTrack){ localTrack.stop(); localTrack.close(); }
+      if(client){ await client.leave(); }
+    }catch(e){ console.error('agora leave cleanup failed', e); }
   }, 0);
 
-  if(channelToRemove){
+  if(presenceChannel){
     (async ()=>{
-      try{ await channelToRemove.untrack(); }catch(e){ console.error('voice untrack failed', e); }
-      try{ supabaseClient.removeChannel(channelToRemove); }catch(e){ console.error('voice removeChannel failed', e); }
+      try{ await presenceChannel.untrack(); }catch(e){ console.error('voice untrack failed', e); }
+      try{ supabaseClient.removeChannel(presenceChannel); }catch(e){ console.error('voice removeChannel failed', e); }
     })();
   }
 }
 
-function sendVoiceSignal(to, data){
-  if(!voiceRealtimeChannel) return;
-  try{
-    voiceRealtimeChannel.send({ type:'broadcast', event:'signal', payload: { from: currentManagerId, to, ...data } });
-  }catch(e){ console.error('voice signal send failed', e); }
-}
-
-function createPeerConnection(peerId, isInitiator){
-  if(voicePeers[peerId]) return voicePeers[peerId];
-  const pc = new RTCPeerConnection(RTC_CONFIG);
-  voicePeers[peerId] = pc;
-
-  voiceLocalStream.getTracks().forEach(track => {
-    const sender = pc.addTrack(track, voiceLocalStream);
-    if(voiceMuted) sender.replaceTrack(null).catch(()=>{});
-  });
-
-  pc.onicecandidate = (e)=>{
-    if(e.candidate) sendVoiceSignal(peerId, { kind:'ice', candidate: e.candidate });
-  };
-  pc.ontrack = (e)=>{
-    let audioEl = document.getElementById('voice-audio-' + peerId);
-    if(!audioEl){
-      audioEl = document.createElement('audio');
-      audioEl.id = 'voice-audio-' + peerId;
-      audioEl.autoplay = true;
-      document.body.appendChild(audioEl);
-    }
-    audioEl.srcObject = e.streams[0];
-    setupVoiceAnalyser(peerId, e.streams[0]);
-  };
-
-  if(isInitiator){
-    pc.onnegotiationneeded = async ()=>{
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      sendVoiceSignal(peerId, { kind:'offer', sdp: pc.localDescription });
-    };
-  }
-  return pc;
-}
-
-async function handleVoiceSignal(payload){
-  const peerId = payload.from;
-  if(payload.kind === 'offer'){
-    const pc = createPeerConnection(peerId, false);
-    await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-    sendVoiceSignal(peerId, { kind:'answer', sdp: pc.localDescription });
-  }else if(payload.kind === 'answer'){
-    const pc = voicePeers[peerId];
-    if(pc) await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
-  }else if(payload.kind === 'ice'){
-    const pc = voicePeers[peerId];
-    if(pc && payload.candidate){ try{ await pc.addIceCandidate(payload.candidate); }catch(e){} }
-  }
-}
-
-function closePeerConnection(peerId){
-  const pc = voicePeers[peerId];
-  if(pc){ pc.close(); delete voicePeers[peerId]; }
-  const audioEl = document.getElementById('voice-audio-' + peerId);
-  if(audioEl) audioEl.remove();
-  delete voiceAnalysers[peerId];
-  if(voiceChannelId && voiceChannelOccupants[voiceChannelId]) delete voiceChannelOccupants[voiceChannelId][peerId];
-}
-
 async function toggleVoiceMute(){
-  if(!voiceLocalStream) return;
-  if(voiceAudioContext && voiceAudioContext.state === 'suspended'){
-    try{ await voiceAudioContext.resume(); }catch(e){}
-  }
+  if(!agoraLocalAudioTrack) return;
   voiceMuted = !voiceMuted;
 
-  // Mute/unmute by detaching or reattaching the SAME original track from each
-  // connection's sender — never disabling, stopping, or re-requesting the
-  // microphone itself. This is the reliable way to do this in WebRTC; toggling
-  // track.enabled (or re-acquiring the mic) is what was getting stuck silent.
-  const track = voiceMuted ? null : voiceLocalStream.getAudioTracks()[0];
-  await Promise.all(Object.values(voicePeers).map(async pc=>{
-    const sender = pc.getSenders()[0]; // audio-only calls — always exactly one sender
-    if(sender){
-      try{ await sender.replaceTrack(track); }
-      catch(e){ console.error('mute replaceTrack failed', e); }
-    }
-  }));
+  // Agora's own track enable/disable is built and tested for exactly this —
+  // no equivalent of the raw-WebRTC "disabled track goes silent" bug we hit
+  // before, since Agora's SDK manages the actual media pipeline itself.
+  try{
+    await agoraLocalAudioTrack.setEnabled(!voiceMuted);
+  }catch(e){ console.error('agora mute failed', e); }
 
   // Let everyone else in the call see the updated mute state, not just yourself.
   if(voiceRealtimeChannel){
