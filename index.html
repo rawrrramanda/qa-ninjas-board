@@ -2513,8 +2513,14 @@ async function joinVoiceChannel(channelId){
       user.audioTrack.play();
     }catch(e){ console.error('agora subscribe failed', e); }
   });
-  agoraClient.on('user-unpublished', (user)=>{ delete agoraRemoteUsers[user.uid]; });
-  agoraClient.on('user-left', (user)=>{ delete agoraRemoteUsers[user.uid]; });
+  agoraClient.on('user-unpublished', (user)=>{
+    if(user.audioTrack){ try{ user.audioTrack.stop(); }catch(e){} }
+    delete agoraRemoteUsers[user.uid];
+  });
+  agoraClient.on('user-left', (user)=>{
+    if(user.audioTrack){ try{ user.audioTrack.stop(); }catch(e){} }
+    delete agoraRemoteUsers[user.uid];
+  });
 
   // Speaking indicator, driven by Agora's own volume metering rather than a
   // hand-rolled Web Audio analyser — sidesteps the audio-context-suspension
@@ -2586,7 +2592,6 @@ async function leaveVoiceChannel(){
   agoraRemoteUsers = {};
   voiceChannelOccupants[leftChannelId] = {};
   voiceMuted = false;
-  subscribeVoicePresenceObserver(leftChannelId);
 
   // Real teardown (closing the Agora connection, releasing the mic) happens
   // right after, in the background — deferred so it can't delay the visual
@@ -2613,8 +2618,15 @@ async function leaveVoiceChannel(){
   if(presenceChannel){
     (async ()=>{
       try{ await presenceChannel.untrack(); }catch(e){ console.error('voice untrack failed', e); }
-      try{ supabaseClient.removeChannel(presenceChannel); }catch(e){ console.error('voice removeChannel failed', e); }
+      try{ await supabaseClient.removeChannel(presenceChannel); }catch(e){ console.error('voice removeChannel failed', e); }
+      // Only resume passive observation once the old channel (same topic
+      // name) is fully gone — creating the new one too early, while the old
+      // one was still being torn down, was leaving the sidebar showing
+      // people who'd already left.
+      subscribeVoicePresenceObserver(leftChannelId);
     })();
+  }else{
+    subscribeVoicePresenceObserver(leftChannelId);
   }
 }
 
