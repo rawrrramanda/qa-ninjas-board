@@ -2590,12 +2590,24 @@ async function leaveVoiceChannel(){
 
   // Real teardown (closing the Agora connection, releasing the mic) happens
   // right after, in the background — deferred so it can't delay the visual
-  // update even by a frame.
+  // update even by a frame. Order matters here: unpublish FIRST so the
+  // server immediately stops delivering your audio to everyone else, before
+  // the local track is torn down — closing the track first (what this used
+  // to do) could leave a stale publish on the server side, which is exactly
+  // why audio kept being heard after "leaving."
   setTimeout(async ()=>{
-    try{
-      if(localTrack){ localTrack.stop(); localTrack.close(); }
-      if(client){ await client.leave(); }
-    }catch(e){ console.error('agora leave cleanup failed', e); }
+    if(client && localTrack){
+      try{ await client.unpublish([localTrack]); }
+      catch(e){ console.error('agora unpublish failed', e); }
+    }
+    if(localTrack){
+      try{ localTrack.stop(); localTrack.close(); }
+      catch(e){ console.error('agora track close failed', e); }
+    }
+    if(client){
+      try{ await client.leave(); }
+      catch(e){ console.error('agora client leave failed', e); }
+    }
   }, 0);
 
   if(presenceChannel){
