@@ -295,6 +295,17 @@
   .chat-channel-btn.active{background:var(--accent);color:#fff;font-weight:600;}
   .chat-channel-btn .voice-count{margin-left:auto;font-family:'IBM Plex Mono';font-size:10.5px;opacity:0.8;}
   .chat-mini-avatar{width:18px;height:18px;border-radius:50%;background:var(--accent-soft);color:var(--accent-dark);display:flex;align-items:center;justify-content:center;font-size:9.5px;font-weight:700;flex-shrink:0;}
+  .nav-badge{margin-left:auto;background:var(--accent-warm);color:#fff;font-family:'IBM Plex Mono';font-size:10.5px;font-weight:700;padding:1px 6px;border-radius:10px;}
+  .chat-channel-btn .chan-unread{margin-left:auto;background:var(--accent-warm);color:#fff;font-family:'IBM Plex Mono';font-size:10px;font-weight:700;padding:1px 6px;border-radius:10px;flex-shrink:0;}
+  .status-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;display:inline-block;}
+  .status-dot.online{background:var(--status-present);}
+  .status-dot.offline{background:var(--ink-faint);}
+  .chat-msg.pinned{background:var(--status-late-soft);border-radius:8px;padding:6px 8px;margin:2px 0;}
+  .pinned-panel{background:#FAFAF8;border-bottom:1px solid var(--border);padding:8px 18px;font-size:12px;}
+  .pinned-panel-item{display:flex;justify-content:space-between;gap:8px;padding:3px 0;}
+  .chat-msg-edit-row{display:flex;gap:6px;margin-top:2px;}
+  .chat-msg-action{font-size:10.5px;color:var(--ink-faint);cursor:pointer;background:none;border:none;padding:0;margin-right:8px;font-family:inherit;}
+  .chat-msg-action:hover{color:var(--accent);}
   .chat-new-channel{padding:10px 12px;border-top:1px solid var(--border);margin-top:auto;}
   .chat-main{flex:1;display:flex;flex-direction:column;min-width:0;}
   .chat-header{padding:14px 18px;border-bottom:1px solid var(--border);font-family:'Space Grotesk';font-weight:600;font-size:14.5px;display:flex;align-items:center;justify-content:space-between;}
@@ -470,6 +481,24 @@ let messagesCache = {};          // channelId -> [messages]
 let chatMessagesSubscribed = null; // which channel id currently has a live subscription
 const CHAT_BUCKET = 'chat-attachments';
 
+// Online status — tracked app-wide the moment anyone signs in, not just while
+// they're on the Team Chat tab.
+let appPresenceChannel = null;
+let onlineManagers = {};         // managerId -> true
+
+// Unread tracking for the sound + badge notification. "Read" state is kept
+// per-browser (localStorage), not synced across devices — a lightweight,
+// per-device concern rather than something worth its own database table.
+let chatUnread = {};             // channelId -> count
+function getLastRead(channelId){
+  try{ return localStorage.getItem('chatLastRead:' + channelId) || null; }catch(e){ return null; }
+}
+function setLastRead(channelId, iso){
+  try{ localStorage.setItem('chatLastRead:' + channelId, iso); }catch(e){}
+}
+
+let editingMessageId = null;     // which message (if any) is currently being edited inline
+
 // Voice channel state
 let voiceChannelId = null;       // which voice channel (if any) we're currently in
 let voiceRealtimeChannel = null; // Supabase presence channel — sidebar occupancy display only, not the audio itself
@@ -588,20 +617,23 @@ const SEED_ACTIVE = new Set([
 ].map(n=>n.toLowerCase()));
 
 /* ================= Violation catalog ================= */
-// severity:false items are plain flags (no PME/DNME); severity:true items require a severity pick.
+// severity:false items still show no PME/DNME picker (there's no real choice
+// for these), but flagging them now automatically records DNME rather than
+// leaving severity blank — being flagged at all means it didn't meet
+// expectations, for these specific items.
 const VIOLATION_CATALOG = [
   { category: 'Professional Camera Presentation', items: [
-    { label: 'Camera Positioning', severity: false },
+    { label: 'Camera Positioning', severity: false, autoDnme: true },
     { label: 'Camera Presence', severity: true },
   ]},
   { category: 'Customer Service Skills', items: [
     { label: 'Introduction', severity: true },
     { label: 'Closing', severity: true },
-    { label: 'Call Readiness', severity: false },
-    { label: 'Call Etiquette – Body Language', severity: false },
-    { label: 'Call Etiquette – Tone of Voice', severity: false },
-    { label: 'Call Etiquette – Environmental Condition', severity: false },
-    { label: 'Call Handling – Technical Concerns', severity: false },
+    { label: 'Call Readiness', severity: false, autoDnme: true },
+    { label: 'Call Etiquette – Body Language', severity: false, autoDnme: true },
+    { label: 'Call Etiquette – Tone of Voice', severity: false, autoDnme: true },
+    { label: 'Call Etiquette – Environmental Condition', severity: false, autoDnme: true },
+    { label: 'Call Handling – Technical Concerns', severity: false, autoDnme: true },
     { label: 'Call Handling – Hold Time Policy', severity: true },
   ]},
   { category: 'Managing the Session', items: [
@@ -773,7 +805,7 @@ async function processImportedCsv(csvText){
       if(status && status !== 'Meets expectations'){
         let severity = csvSeverity(status);
         const def = catalogItem(m.category, m.item);
-        if(!def || !def.severity) severity = ''; // exempt items: drop severity regardless of CSV
+        if(!def || !def.severity) severity = (def && def.autoDnme) ? 'DNME' : ''; // exempt items: auto-DNME, ignoring whatever the CSV says
         items.push({ category: m.category, item: m.item, severity });
       }
     });
@@ -1096,6 +1128,35 @@ async function migrateToneOfVoiceLabelOnce(){
   }catch(e){ console.error('tone-of-voice migration failed', e); }
 }
 
+// The items marked autoDnme in the catalog used to be logged with blank
+// severity ("Flagged, no severity"). Now that flagging them means DNME
+// automatically, this fills in DNME on every existing record that predates
+// that change, so historical data reads consistently with new entries.
+async function migrateAutoDnmeOnce(){
+  const done = await storageGet('migration:auto-dnme-v1');
+  if(done) return;
+  try{
+    const { data, error } = await supabaseClient.from('kv_store').select('key,value').like('key', 'violations:%');
+    if(error){ console.error('auto-dnme migration scan failed', error); return; }
+    for(const row of (data || [])){
+      const records = Array.isArray(row.value) ? row.value : [];
+      let changed = false;
+      records.forEach(rec=>{
+        (rec.items || []).forEach(it=>{
+          const def = catalogItem(it.category, it.item);
+          if(def && def.autoDnme && !it.severity){ it.severity = 'DNME'; changed = true; }
+        });
+      });
+      if(changed){
+        await storageSet(row.key, records);
+        const interpId = row.key.replace('violations:','');
+        if(violationsCache[interpId] !== undefined) violationsCache[interpId] = records;
+      }
+    }
+    await storageSet('migration:auto-dnme-v1', true);
+  }catch(e){ console.error('auto-dnme migration failed', e); }
+}
+
 async function ensureViolationsLoaded(interpreterId){
   if(violationsCache[interpreterId] !== undefined) return;
   const r = await storageGet('violations:' + interpreterId);
@@ -1125,7 +1186,7 @@ function render(){
         <button class="nav-item ${currentView==='performance'?'active':''}" data-nav="performance"><span class="ic">&#9873;</span> Performance</button>
         <button class="nav-item ${currentView==='roster'?'active':''}" data-nav="roster"><span class="ic">&#128101;</span> Team Roster</button>
         <button class="nav-item ${currentView==='overview'?'active':''}" data-nav="overview"><span class="ic">&#128202;</span> Monthly Overview</button>
-        <button class="nav-item ${currentView==='chat'?'active':''}" data-nav="chat"><span class="ic">&#128172;</span> Team Chat</button>
+        <button class="nav-item ${currentView==='chat'?'active':''}" data-nav="chat"><span class="ic">&#128172;</span> Team Chat${Object.values(chatUnread).reduce((a,b)=>a+b,0) > 0 ? ` <span class="nav-badge">${Object.values(chatUnread).reduce((a,b)=>a+b,0)}</span>` : ''}</button>
       </nav>
       <div class="sidebar-foot">
         Signed in as <strong style="color:var(--sidebar-ink);">${escapeHtml(me ? me.name : '')}</strong><br>
@@ -1713,19 +1774,45 @@ async function renderChat(main){
     currentChannelId = lobby ? lobby.id : (channels[0] ? channels[0].id : null);
   }
   const activeChannel = channels.find(c=>c.id===currentChannelId);
+
+  // Clear this channel's unread badge BEFORE building the sidebar HTML below
+  // — clearing it after would mean the stale count is already baked into the
+  // markup, and wouldn't visually disappear until the next click elsewhere.
+  if(activeChannel && activeChannel.type !== 'voice' && chatUnread[activeChannel.id]){
+    delete chatUnread[activeChannel.id];
+  }
+
   const textChannels = channels.filter(c=>c.type==='text');
   const voiceChannels = channels.filter(c=>c.type==='voice');
+  const dmChannels = channels.filter(c=>c.type==='dm');
+  const otherManagers = managersList.filter(m=>m.user_id !== currentManagerId);
 
   main.innerHTML = `
     <div class="page-head">
-      <div class="page-title">Team Chat<span class="sub">Channels for your team, plus voice</span></div>
+      <div class="page-title">Team Chat<span class="sub">Channels, DMs, and voice for your team</span></div>
     </div>
     <div class="chat-wrap">
       <div class="chat-channels">
         <div class="chat-channels-group">Text channels</div>
         ${textChannels.map(c=>`
-          <button class="chat-channel-btn ${c.id===currentChannelId?'active':''}" data-channel="${c.id}">#&nbsp;${escapeHtml(c.name)}</button>
+          <button class="chat-channel-btn ${c.id===currentChannelId?'active':''}" data-channel="${c.id}">
+            #&nbsp;${escapeHtml(c.name)}
+            ${chatUnread[c.id] ? `<span class="chan-unread">${chatUnread[c.id]}</span>` : ''}
+          </button>
         `).join('')}
+
+        <div class="chat-channels-group">Direct messages</div>
+        ${dmChannels.length === 0 ? `<div class="hint" style="padding:0 12px 6px;">Start one from Managers below.</div>` : ''}
+        ${dmChannels.map(c=>{
+          const otherId = c.dm_user_a === currentManagerId ? c.dm_user_b : c.dm_user_a;
+          return `
+          <button class="chat-channel-btn ${c.id===currentChannelId?'active':''}" data-channel="${c.id}">
+            <span class="status-dot ${onlineManagers[otherId] ? 'online' : 'offline'}"></span>
+            ${escapeHtml(dmDisplayName(c))}
+            ${chatUnread[c.id] ? `<span class="chan-unread">${chatUnread[c.id]}</span>` : ''}
+          </button>
+        `;}).join('')}
+
         <div class="chat-channels-group">Voice channels</div>
         ${voiceChannels.map(c=>{
           const occ = voiceChannelOccupants[c.id] || {};
@@ -1747,6 +1834,15 @@ async function renderChat(main){
             </div>` : ''}
           </button>
         `;}).join('')}
+
+        <div class="chat-channels-group">Managers</div>
+        ${otherManagers.map(m=>`
+          <button class="chat-channel-btn" data-start-dm="${m.user_id}">
+            <span class="status-dot ${onlineManagers[m.user_id] ? 'online' : 'offline'}"></span>
+            ${escapeHtml(m.name)}
+          </button>
+        `).join('')}
+
         <div class="chat-new-channel">
           <div class="upload-actions" style="flex-direction:column;align-items:stretch;gap:6px;">
             <input type="text" id="newChannelName" placeholder="New channel name" style="font-size:12.5px;padding:7px 9px;border-radius:6px;border:1px solid var(--border);">
@@ -1764,6 +1860,9 @@ async function renderChat(main){
 
   document.querySelectorAll('[data-channel]').forEach(btn=>{
     btn.addEventListener('click', ()=>{ currentChannelId = btn.dataset.channel; refresh(); });
+  });
+  document.querySelectorAll('[data-start-dm]').forEach(btn=>{
+    btn.addEventListener('click', ()=> findOrCreateDM(btn.dataset.startDm));
   });
   document.getElementById('createChannelBtn').addEventListener('click', async ()=>{
     const name = document.getElementById('newChannelName').value.trim();
@@ -1783,6 +1882,10 @@ async function renderChat(main){
   }else{
     await loadMessages(activeChannel.id);
     subscribeToChannelMessages(activeChannel.id);
+    // The unread badge was already cleared earlier, before the sidebar
+    // rendered — this just resets the "last seen" point new-message
+    // notifications are measured against.
+    setLastRead(activeChannel.id, new Date().toISOString());
     await renderChatMessages(true);
   }
 }
@@ -1794,44 +1897,74 @@ async function renderChatMessages(isInitial){
   if(!channel) return;
   const msgs = messagesCache[currentChannelId] || [];
   const signedUrls = await getChatSignedUrls(msgs.map(m=>m.attachment_path));
+  const pinned = msgs.filter(m=>m.pinned);
+  const headerName = channel.type === 'dm' ? dmDisplayName(channel) : channel.name;
+  const headerPrefix = channel.type === 'dm' ? '' : '#&nbsp;';
 
   el.innerHTML = `
-    <div class="chat-header">#&nbsp;${escapeHtml(channel.name)}${!channel.is_fixed ? `<button class="btn btn-sm btn-danger" id="deleteChannelBtn">Delete channel</button>` : ''}</div>
+    <div class="chat-header">${headerPrefix}${escapeHtml(headerName)}${!channel.is_fixed ? `<button class="btn btn-sm btn-danger" id="deleteChannelBtn">Delete channel</button>` : ''}</div>
+    ${pinned.length ? `
+      <div class="pinned-panel">
+        <strong style="font-size:11px;text-transform:uppercase;letter-spacing:0.03em;color:var(--ink-soft);">&#128204; Pinned (${pinned.length})</strong>
+        ${pinned.map(m=>`
+          <div class="pinned-panel-item">
+            <span style="overflow-wrap:anywhere;"><strong>${escapeHtml(managerName(m.user_id))}:</strong> ${escapeHtml((m.body||'').slice(0,120))}</span>
+            <button class="chat-msg-action" data-unpin="${m.id}">Unpin</button>
+          </div>
+        `).join('')}
+      </div>
+    ` : ''}
     <div class="chat-messages" id="chatMessagesList">
       ${msgs.length === 0 ? `<div class="hint" style="padding:20px;">No messages yet — say hello.</div>` : msgs.map(m=>{
         const name = managerName(m.user_id);
         const isImage = m.attachment_type && m.attachment_type.startsWith('image/');
         const url = signedUrls[m.attachment_path];
+        const isMine = m.user_id === currentManagerId;
+        const isEditing = editingMessageId === m.id;
         return `
-        <div class="chat-msg">
+        <div class="chat-msg ${m.pinned ? 'pinned' : ''}" data-msg-id="${m.id}">
           <div class="chat-msg-avatar">${escapeHtml(chatInitial(name))}</div>
           <div style="min-width:0;flex:1;">
             <span class="chat-msg-name">${escapeHtml(name)}</span><span class="chat-msg-time">${fmtChatTime(m.created_at)}</span>
-            ${m.body ? `<div class="chat-msg-body">${escapeHtml(m.body)}</div>` : ''}
+            ${m.edited_at ? `<span class="chat-msg-time">(edited)</span>` : ''}
+            ${m.pinned ? `<span class="chat-msg-time">&#128204; pinned</span>` : ''}
+            ${isEditing ? `
+              <div class="chat-msg-edit-row">
+                <textarea id="editBody_${m.id}" rows="1" style="flex:1;font-family:inherit;font-size:13.5px;padding:6px 8px;border-radius:6px;border:1px solid var(--border);">${escapeHtml(m.body||'')}</textarea>
+                <button class="btn btn-sm btn-primary" data-save-edit="${m.id}">Save</button>
+                <button class="btn btn-sm" data-cancel-edit="${m.id}">Cancel</button>
+              </div>
+            ` : (m.body ? `<div class="chat-msg-body">${escapeHtml(m.body)}</div>` : '')}
             ${m.attachment_path ? `
               <div class="chat-msg-attach">
                 ${isImage
                   ? (url ? `<img src="${url}" data-view-img="${url}">` : `<div class="hint">Image unavailable</div>`)
                   : `<a class="chat-msg-file" href="${url||'#'}" target="_blank" rel="noopener">&#128206; ${escapeHtml(m.attachment_name||'file')}</a>`}
               </div>` : ''}
+            ${!isEditing ? `
+              <div style="margin-top:3px;">
+                ${isMine ? `<button class="chat-msg-action" data-edit-msg="${m.id}">Edit</button>` : ''}
+                <button class="chat-msg-action" data-toggle-pin="${m.id}" data-currently-pinned="${!!m.pinned}">${m.pinned ? 'Unpin' : 'Pin'}</button>
+              </div>
+            ` : ''}
           </div>
         </div>`;
       }).join('')}
     </div>
     <div class="chat-composer">
       <label class="chat-attach-btn" title="Attach a file or image">&#128206;<input type="file" id="chatFileInput" style="display:none;"></label>
-      <textarea id="chatBodyInput" placeholder="Message #${escapeHtml(channel.name)}" rows="1"></textarea>
+      <textarea id="chatBodyInput" placeholder="Message ${channel.type==='dm' ? escapeHtml(headerName) : '#'+escapeHtml(channel.name)}" rows="1"></textarea>
       <button class="btn btn-primary" id="chatSendBtn">Send</button>
     </div>
   `;
 
   const list = document.getElementById('chatMessagesList');
-  if(list) list.scrollTop = list.scrollHeight;
+  if(list && !editingMessageId) list.scrollTop = list.scrollHeight;
 
   const delBtn = document.getElementById('deleteChannelBtn');
   if(delBtn){
     delBtn.addEventListener('click', async ()=>{
-      if(!confirm(`Delete #${channel.name}? This deletes all its messages too.`)) return;
+      if(!confirm(`Delete this ${channel.type==='dm'?'conversation':'channel'}? This deletes all its messages too.`)) return;
       const ok = await deleteChannelById(channel.id);
       if(ok){ currentChannelId = null; refresh(); }
     });
@@ -1839,6 +1972,53 @@ async function renderChatMessages(isInitial){
 
   document.querySelectorAll('[data-view-img]').forEach(img=>{
     img.addEventListener('click', ()=> openImageModal(img.dataset.viewImg));
+  });
+
+  document.querySelectorAll('[data-edit-msg]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{ editingMessageId = btn.dataset.editMsg; renderChatMessages(); });
+  });
+  document.querySelectorAll('[data-cancel-edit]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{ editingMessageId = null; renderChatMessages(); });
+  });
+  document.querySelectorAll('[data-save-edit]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const id = btn.dataset.saveEdit;
+      const newBody = document.getElementById('editBody_'+id).value.trim();
+      if(!newBody){ showToast('Message cannot be empty'); return; }
+      const { error } = await supabaseClient.from('messages').update({ body: newBody, edited_at: new Date().toISOString() }).eq('id', id);
+      if(error){ console.error('edit message failed', error); showToast('Could not save edit'); return; }
+      const cache = messagesCache[currentChannelId];
+      const rec = cache && cache.find(m=>m.id===id);
+      if(rec){ rec.body = newBody; rec.edited_at = new Date().toISOString(); }
+      editingMessageId = null;
+      renderChatMessages();
+    });
+  });
+  document.querySelectorAll('[data-toggle-pin]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const id = btn.dataset.togglePin;
+      const currentlyPinned = btn.dataset.currentlyPinned === 'true';
+      const patch = currentlyPinned
+        ? { pinned: false, pinned_by: null, pinned_at: null }
+        : { pinned: true, pinned_by: currentManagerId, pinned_at: new Date().toISOString() };
+      const { error } = await supabaseClient.from('messages').update(patch).eq('id', id);
+      if(error){ console.error('pin toggle failed', error); showToast('Could not update pin'); return; }
+      const cache = messagesCache[currentChannelId];
+      const rec = cache && cache.find(m=>m.id===id);
+      if(rec) Object.assign(rec, patch);
+      renderChatMessages();
+    });
+  });
+  document.querySelectorAll('[data-unpin]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const id = btn.dataset.unpin;
+      const { error } = await supabaseClient.from('messages').update({ pinned: false, pinned_by: null, pinned_at: null }).eq('id', id);
+      if(error){ console.error('unpin failed', error); return; }
+      const cache = messagesCache[currentChannelId];
+      const rec = cache && cache.find(m=>m.id===id);
+      if(rec){ rec.pinned = false; rec.pinned_by = null; rec.pinned_at = null; }
+      renderChatMessages();
+    });
   });
 
   const send = async ()=>{
@@ -2016,7 +2196,7 @@ async function renderPerformance(main){
               ${cat.items.map((item,ii)=>`
                 <label class="flag-item">
                   <input type="checkbox" id="chk_${ci}_${ii}" data-flag-ci="${ci}" data-flag-ii="${ii}">
-                  <span>${escapeHtml(item.label)}</span>
+                  <span>${escapeHtml(item.label)}${item.autoDnme ? ' <span style="color:var(--ink-faint);font-size:11px;">(auto DNME)</span>' : ''}</span>
                   ${item.severity ? `
                     <select class="flag-sev-select" id="sev_${ci}_${ii}" disabled>
                       <option value="">Severity…</option>
@@ -2090,6 +2270,8 @@ async function renderPerformance(main){
               const sev = document.getElementById(`sev_${ci}_${ii}`);
               severity = sev.value;
               if(!severity) missingSeverity = true;
+            }else if(item.autoDnme){
+              severity = 'DNME';
             }
             toFlag.push({ category: cat.category, item: item.label, severity });
           }
@@ -2216,7 +2398,7 @@ function renderPerformanceBody(scope){
                       <option value="PME" ${it.severity==='PME'?'selected':''}>PME</option>
                       <option value="DNME" ${it.severity==='DNME'?'selected':''}>DNME</option>
                     </select>
-                    ${!catalogItem(it.category, it.item)?.severity ? severityBadge('') : ''}
+                    ${!catalogItem(it.category, it.item)?.severity ? severityBadge(it.severity) : ''}
                     ${(v.items||[]).length > 1 ? `<button type="button" class="btn btn-sm btn-danger" data-item-remove title="Remove this violation">×</button>` : ''}
                   </div>
                 `).join('')}
@@ -2266,7 +2448,7 @@ function renderPerformanceBody(scope){
         rec.items[idx].category = catSel.value;
         rec.items[idx].item = itemSel.value;
         const def = catalogItem(rec.items[idx].category, rec.items[idx].item);
-        rec.items[idx].severity = def && def.severity ? sevSel.value : '';
+        rec.items[idx].severity = def && def.severity ? sevSel.value : (def && def.autoDnme ? 'DNME' : '');
         await saveViolations(pid);
       };
       [catSel, itemSel, sevSel].forEach(el=> el.addEventListener('change', async ()=>{ await persistItem(); refresh(); }));
@@ -2358,6 +2540,46 @@ async function deleteChannelById(id){
   const { error } = await supabaseClient.from('channels').delete().eq('id', id);
   if(error){ console.error('delete channel failed', error); showToast('Could not delete channel (fixed channels can\'t be removed)'); return false; }
   return true;
+}
+
+// A DM's stored `name` is only meaningful from its creator's point of view,
+// so the display name is computed per-viewer instead: whichever participant
+// isn't you.
+function dmDisplayName(channel){
+  if(channel.type !== 'dm') return channel.name;
+  const otherId = channel.dm_user_a === currentManagerId ? channel.dm_user_b : channel.dm_user_a;
+  return managerName(otherId);
+}
+
+async function findOrCreateDM(otherId){
+  const existing = channels.find(c => c.type === 'dm' &&
+    ((c.dm_user_a === currentManagerId && c.dm_user_b === otherId) ||
+     (c.dm_user_a === otherId && c.dm_user_b === currentManagerId)));
+  if(existing){ currentChannelId = existing.id; refresh(); return; }
+
+  const { data, error } = await supabaseClient.from('channels').insert({
+    name: managerName(otherId), type: 'dm', is_fixed: false,
+    created_by: currentManagerId, dm_user_a: currentManagerId, dm_user_b: otherId
+  }).select().single();
+
+  if(error){
+    if(error.code === '23505'){
+      // Someone else's near-simultaneous request won the race — the database
+      // rejected ours as a duplicate. That's expected now, not a failure:
+      // just pick up the conversation that already exists.
+      await loadChannels();
+      const nowExisting = channels.find(c => c.type === 'dm' &&
+        ((c.dm_user_a === currentManagerId && c.dm_user_b === otherId) ||
+         (c.dm_user_a === otherId && c.dm_user_b === currentManagerId)));
+      if(nowExisting){ currentChannelId = nowExisting.id; refresh(); return; }
+    }
+    console.error('create dm failed', error);
+    showToast('Could not start conversation');
+    return;
+  }
+  channels.push(data);
+  currentChannelId = data.id;
+  refresh();
 }
 
 /* ================= Team Chat: text messages ================= */
@@ -2732,19 +2954,26 @@ function renderGate(errorMsg){
 let realtimeChannelsActive = false;
 
 // If someone's actively typing in a field, applying a live update right now
-// would rebuild the DOM under them and interrupt it. Defer the refresh until
-// they're done (blur), rather than skip it entirely.
-let pendingRealtimeRefresh = false;
-function requestRealtimeRefresh(){
+// would rebuild the DOM under them and interrupt it. Defer the update until
+// they're done (blur), rather than skip it entirely. Supports two levels:
+// a light main-content refresh, or a full render (needed when the sidebar
+// itself has to change, e.g. a nav badge count).
+let pendingRealtimeAction = null; // null | 'refresh' | 'render'
+function requestRealtimeUpdate(kind){
   const active = document.activeElement;
   const isEditing = active && ['INPUT','TEXTAREA','SELECT'].includes(active.tagName);
-  if(isEditing){ pendingRealtimeRefresh = true; return; }
-  refresh();
+  if(isEditing){
+    if(pendingRealtimeAction !== 'render') pendingRealtimeAction = kind;
+    return;
+  }
+  if(kind === 'render') render(); else refresh();
 }
+function requestRealtimeRefresh(){ requestRealtimeUpdate('refresh'); }
 document.addEventListener('focusout', ()=>{
-  if(pendingRealtimeRefresh){
-    pendingRealtimeRefresh = false;
-    setTimeout(refresh, 150); // let any blur-triggered save finish first
+  if(pendingRealtimeAction){
+    const kind = pendingRealtimeAction;
+    pendingRealtimeAction = null;
+    setTimeout(()=> kind === 'render' ? render() : refresh(), 150); // let any blur-triggered save finish first
   }
 });
 
@@ -2787,6 +3016,72 @@ async function handleManagersChange(){
   requestRealtimeRefresh();
 }
 
+// A short, self-contained "ding" — generated on the fly rather than an audio
+// file, so there's nothing to host and no risk of it going stale. Creates a
+// fresh AudioContext per play and closes it right after, avoiding the
+// suspended-context issues that caused real trouble with the old speaking
+// indicator.
+function playNotificationSound(){
+  try{
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const play = ()=>{
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = 880;
+      gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.15, ctx.currentTime + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.28);
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.3);
+      setTimeout(()=>{ ctx.close().catch(()=>{}); }, 500);
+    };
+    // A freshly-created context often starts suspended, especially in a
+    // background/unfocused tab — exactly the situation this needs to work
+    // in. Explicitly resume before playing instead of assuming it's running.
+    if(ctx.state === 'suspended'){
+      ctx.resume().then(play).catch(()=>{ ctx.close().catch(()=>{}); });
+    }else{
+      play();
+    }
+  }catch(e){ console.error('notification sound failed', e); }
+}
+
+function handleNewMessageForUnread(payload){
+  const msg = payload.new;
+  if(!msg || msg.user_id === currentManagerId) return; // never notify on your own messages
+
+  // Defense in depth: only act on this if the channel is one we actually
+  // have loaded (which only happens via a real, RLS-respecting query) —
+  // don't trust the realtime event alone to have been correctly scoped to
+  // channels/DMs this user can see.
+  const channelVisible = channels.some(c => c.id === msg.channel_id);
+  if(!channelVisible) return;
+
+  const activelyViewing = currentView === 'chat' && currentChannelId === msg.channel_id && document.hasFocus();
+  if(activelyViewing){
+    setLastRead(msg.channel_id, msg.created_at);
+    return;
+  }
+  chatUnread[msg.channel_id] = (chatUnread[msg.channel_id] || 0) + 1;
+  playNotificationSound();
+  requestRealtimeUpdate('render'); // sidebar badge + nav badge both need a full render
+}
+
+// Pin/unpin and edits happen via UPDATE, and need to reach anyone with that
+// channel open live, not just the person who made the change.
+function handleMessageUpdateGlobal(payload){
+  const msg = payload.new;
+  if(!msg) return;
+  const cache = messagesCache[msg.channel_id];
+  if(cache){
+    const idx = cache.findIndex(m=>m.id===msg.id);
+    if(idx !== -1) cache[idx] = msg;
+  }
+  if(currentView === 'chat' && currentChannelId === msg.channel_id) requestRealtimeRefresh();
+}
+
 function setupRealtimeSubscriptions(){
   if(realtimeChannelsActive) return;
   realtimeChannelsActive = true;
@@ -2806,9 +3101,36 @@ function setupRealtimeSubscriptions(){
       if(currentView === 'chat') requestRealtimeRefresh();
     })
     .subscribe();
+
+  // Unread/notification tracking — every new message across every channel
+  // you can see (RLS already limits this to your own DMs plus open
+  // channels), not just the one you happen to have open.
+  supabaseClient
+    .channel('messages_unread_tracking')
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, handleNewMessageForUnread)
+    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages' }, handleMessageUpdateGlobal)
+    .subscribe();
+
+  // Online status — tracked the moment you're signed in, on any tab, not
+  // just while viewing Team Chat.
+  appPresenceChannel = supabaseClient.channel('app-presence', { config: { presence: { key: currentManagerId } } });
+  appPresenceChannel
+    .on('presence', { event: 'sync' }, ()=>{
+      const state = appPresenceChannel.presenceState();
+      onlineManagers = {};
+      Object.keys(state).forEach(key=> onlineManagers[key] = true);
+      requestRealtimeUpdate('render');
+    })
+    .subscribe(async (status)=>{
+      if(status === 'SUBSCRIBED'){
+        try{ await appPresenceChannel.track({ online: true }); }catch(e){ console.error('presence track failed', e); }
+      }
+    });
 }
 function teardownRealtimeSubscriptions(){
   realtimeChannelsActive = false;
+  if(appPresenceChannel){ appPresenceChannel.untrack().catch(()=>{}); appPresenceChannel = null; }
+  onlineManagers = {};
   supabaseClient.removeAllChannels();
 }
 
@@ -2825,7 +3147,9 @@ async function completeSignIn(userId){
   await migrateStatusCodesV2Once();
   await migrateCombineQarLogsOnce();
   await migrateToneOfVoiceLabelOnce();
+  await migrateAutoDnmeOnce();
   await loadRoster();
+  await loadChannels();
   setupRealtimeSubscriptions();
   loading = false;
   render();
@@ -2880,7 +3204,10 @@ function renderAccessSettingsPanel(){
         <label>Manager accounts</label>
         ${managersList.map(m=>`
           <div class="row" style="margin-bottom:8px;flex-wrap:wrap;">
-            <span style="width:150px;font-size:13px;font-weight:600;">${escapeHtml(m.name)}${m.user_id===currentManagerId ? ' <span style="color:var(--ink-faint);font-weight:400;">(you)</span>' : ''}</span>
+            <span style="width:150px;font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px;">
+              <span class="status-dot ${onlineManagers[m.user_id] ? 'online' : 'offline'}" title="${onlineManagers[m.user_id] ? 'Online' : 'Offline'}"></span>
+              ${escapeHtml(m.name)}${m.user_id===currentManagerId ? ' <span style="color:var(--ink-faint);font-weight:400;">(you)</span>' : ''}
+            </span>
             <span style="font-size:11.5px;color:var(--ink-soft);width:170px;">${escapeHtml(m.email || 'no email on file')}</span>
             <span style="font-size:12px;color:var(--ink-soft);width:80px;">${m.is_admin ? 'Admin' : 'Manager'}</span>
             ${m.user_id!==currentManagerId ? `<button class="btn btn-sm" data-toggle-admin="${m.user_id}" data-currently="${m.is_admin}">${m.is_admin ? 'Remove admin' : 'Make admin'}</button>` : ''}
