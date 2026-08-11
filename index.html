@@ -322,7 +322,7 @@
   .chat-header{padding:14px 18px;border-bottom:1px solid var(--border);font-family:'Space Grotesk';font-weight:600;font-size:14.5px;display:flex;align-items:center;justify-content:space-between;}
   .chat-messages{flex:1;overflow-y:auto;padding:14px 18px;display:flex;flex-direction:column;gap:2px;}
   .chat-msg{display:flex;gap:10px;padding:6px 0;}
-  .chat-msg-avatar{width:30px;height:30px;border-radius:50%;background:var(--accent-soft);color:var(--accent-dark);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;flex-shrink:0;}
+  .chat-msg-avatar{width:42px;height:42px;border-radius:50%;background:var(--accent-soft);color:var(--accent-dark);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:15px;flex-shrink:0;}
   .chat-msg-name{font-weight:600;font-size:13px;}
   .chat-msg-time{font-size:10.5px;color:var(--ink-faint);margin-left:7px;font-family:'IBM Plex Mono';}
   .chat-msg-body{font-size:13.5px;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere;margin-top:2px;}
@@ -557,7 +557,7 @@ async function getAvatarUrlMapFor(managerIds){
 function avatarHtml(managerId, urlMap, sizeClass){
   const url = urlMap && urlMap[managerId];
   const name = managerName(managerId);
-  if(url) return `<img class="${sizeClass}" src="${url}" style="border-radius:50%;object-fit:cover;">`;
+  if(url) return `<img class="${sizeClass}" src="${url}" data-view-img="${url}" style="border-radius:50%;object-fit:cover;cursor:pointer;">`;
   return `<div class="${sizeClass}">${escapeHtml(chatInitial(name))}</div>`;
 }
 
@@ -570,7 +570,7 @@ async function warmAvatarUrlCache(){
 function avatarHtmlSync(managerId, sizeClass){
   const m = managersList.find(mm=>mm.user_id===managerId);
   const url = m && m.avatar_path ? avatarUrlCache[m.avatar_path] : null;
-  if(url) return `<img class="${sizeClass}" src="${url}" style="border-radius:50%;object-fit:cover;">`;
+  if(url) return `<img class="${sizeClass}" src="${url}" data-view-img="${url}" style="border-radius:50%;object-fit:cover;cursor:pointer;">`;
   return `<div class="${sizeClass}">${escapeHtml(chatInitial(managerName(managerId)))}</div>`;
 }
 
@@ -1335,7 +1335,10 @@ function render(){
         <button class="nav-item ${currentView==='chat'?'active':''}" data-nav="chat"><span class="ic">&#128172;</span> Team Chat${Object.values(chatUnread).reduce((a,b)=>a+b,0) > 0 ? ` <span class="nav-badge">${Object.values(chatUnread).reduce((a,b)=>a+b,0)}</span>` : ''}</button>
       </nav>
       <div class="sidebar-foot">
-        Signed in as <strong style="color:var(--sidebar-ink);">${escapeHtml(me ? me.name : '')}</strong><br>
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:2px;">
+          ${avatarHtmlSync(currentManagerId, 'chat-mini-avatar')}
+          <span>Signed in as<br><strong style="color:var(--sidebar-ink);">${escapeHtml(me ? me.name : '')}</strong></span>
+        </div>
         <button class="nav-item" id="switchManager" style="padding:6px 0;margin-top:4px;">&#8646; Switch manager</button>
       </div>
     </div>
@@ -1345,6 +1348,9 @@ function render(){
     el.addEventListener('click', ()=>{ currentView = el.dataset.nav; render(); });
   });
   document.getElementById('switchManager').addEventListener('click', signOut);
+  app.querySelectorAll('.sidebar [data-view-img]').forEach(el=>{
+    el.addEventListener('click', ()=> openImageModal(el.dataset.viewImg));
+  });
   refresh();
 }
 
@@ -1518,7 +1524,7 @@ async function renderToday(main){
   });
 
   // thumbnails -> modal
-  document.querySelectorAll('[data-view-img]').forEach(el=>{
+  main.querySelectorAll('[data-view-img]').forEach(el=>{
     el.addEventListener('click', ()=> openImageModal(el.dataset.viewImg));
   });
 }
@@ -2140,9 +2146,12 @@ async function renderChatMessages(isInitial){
     }
   }
 
-  document.querySelectorAll('[data-view-img]').forEach(img=>{
-    img.addEventListener('click', ()=> openImageModal(img.dataset.viewImg));
-  });
+  const msgTargetEl = document.getElementById(chatRenderTarget);
+  if(msgTargetEl){
+    msgTargetEl.querySelectorAll('[data-view-img]').forEach(img=>{
+      img.addEventListener('click', ()=> openImageModal(img.dataset.viewImg));
+    });
+  }
 
   document.querySelectorAll('[data-edit-msg]').forEach(btn=>{
     btn.addEventListener('click', ()=>{ editingMessageId = btn.dataset.editMsg; renderChatMessages(); });
@@ -2257,6 +2266,9 @@ async function renderVoiceRoom(){
   if(muteBtn) muteBtn.addEventListener('click', ()=> runVoiceAction(async ()=>{ await toggleVoiceMute(); await renderVoiceRoom(); }));
   const deafenBtn = document.getElementById('voiceDeafenBtn');
   if(deafenBtn) deafenBtn.addEventListener('click', ()=> runVoiceAction(async ()=>{ await toggleDeafen(); await renderVoiceRoom(); }));
+  document.querySelectorAll('.voice-participants [data-view-img]').forEach(img=>{
+    img.addEventListener('click', ()=> openImageModal(img.dataset.viewImg));
+  });
 
   // Persistent chat for this voice channel — same messaging system as every
   // other channel, just embedded below the controls instead of filling the
@@ -3400,10 +3412,16 @@ function handleKvStoreChange(payload){
   }
 }
 
-async function handleManagersChange(){
+async function handleManagersChange(payload){
   await loadManagersList();
   await warmAvatarUrlCache();
-  requestRealtimeRefresh();
+  // Your own record changing (name, avatar, etc.) needs a full render since
+  // that's what updates the sidebar's "Signed in as" section — this is
+  // exactly what was missing when an admin changed someone else's picture
+  // and it never showed up on that person's own screen. Anyone else's
+  // record changing only needs the lighter refresh.
+  const changedUserId = (payload && payload.new && payload.new.user_id) || (payload && payload.old && payload.old.user_id);
+  requestRealtimeUpdate(changedUserId === currentManagerId ? 'render' : 'refresh');
 }
 
 // A short, self-contained "ding" — generated on the fly rather than an audio
@@ -3509,7 +3527,11 @@ function setupRealtimeSubscriptions(){
       const state = appPresenceChannel.presenceState();
       onlineManagers = {};
       Object.keys(state).forEach(key=> onlineManagers[key] = true);
-      requestRealtimeUpdate('render');
+      // A light refresh, not a full render — someone else going online/offline
+      // never needs to touch your own sidebar, and this fires often enough
+      // (anyone opening/closing a tab) that a full rebuild was causing a
+      // visible flash across the whole app for everyone connected.
+      requestRealtimeUpdate('refresh');
     })
     .subscribe(async (status)=>{
       if(status === 'SUBSCRIBED'){
@@ -3699,6 +3721,9 @@ function wireAccessSettingsPanel(){
     });
   });
 
+  main.querySelectorAll('[data-view-img]').forEach(el=>{
+    el.addEventListener('click', ()=> openImageModal(el.dataset.viewImg));
+  });
   const changeMyAvatarBtn = document.getElementById('changeMyAvatar');
   if(changeMyAvatarBtn) changeMyAvatarBtn.addEventListener('click', ()=>{
     openAvatarCropModal(currentManagerId, refresh);
