@@ -509,8 +509,13 @@ async function uploadAvatarBlob(managerId, blob){
     const path = `${managerId}/${Date.now()}.png`;
     const { error: upErr } = await supabaseClient.storage.from(AVATAR_BUCKET).upload(path, blob, { contentType: 'image/png', upsert: false });
     if(upErr){ console.error('avatar upload failed', upErr); showToast('Could not upload picture'); return false; }
-    const { error: dbErr } = await supabaseClient.from('managers').update({ avatar_path: path }).eq('user_id', managerId);
+    const { data: updRows, error: dbErr } = await supabaseClient.from('managers').update({ avatar_path: path }).eq('user_id', managerId).select();
     if(dbErr){ console.error('avatar db update failed', dbErr); showToast('Could not save picture'); return false; }
+    if(!updRows || updRows.length === 0){
+      console.error('avatar db update affected 0 rows — likely a permissions issue');
+      showToast('Could not save picture — permission issue, check console');
+      return false;
+    }
     if(existing) existing.avatar_path = path;
     avatarUrlCache = {};
     await getAvatarSignedUrl(path); // warm the cache now, so the caller's immediate re-render already has it
@@ -522,8 +527,13 @@ async function removeAvatar(managerId){
   const existing = managersList.find(m=>m.user_id===managerId);
   if(!existing || !existing.avatar_path) return true;
   try{ await supabaseClient.storage.from(AVATAR_BUCKET).remove([existing.avatar_path]); }catch(e){}
-  const { error } = await supabaseClient.from('managers').update({ avatar_path: null }).eq('user_id', managerId);
+  const { data: updRows, error } = await supabaseClient.from('managers').update({ avatar_path: null }).eq('user_id', managerId).select();
   if(error){ console.error('avatar remove failed', error); showToast('Could not remove picture'); return false; }
+  if(!updRows || updRows.length === 0){
+    console.error('avatar remove affected 0 rows — likely a permissions issue');
+    showToast('Could not remove picture — permission issue, check console');
+    return false;
+  }
   existing.avatar_path = null;
   avatarUrlCache = {};
   return true;
@@ -1917,10 +1927,12 @@ function fmtChatTime(iso){
   catch(e){ return ''; }
 }
 
-async function renderChat(main){
-  await loadChannels();
-  await ensureDefaultChannelsOnce();
-  if(channels.length === 0) await loadChannels(); // pick up the just-seeded defaults
+async function renderChat(main, skipReload){
+  if(!skipReload){
+    await loadChannels();
+    await ensureDefaultChannelsOnce();
+    if(channels.length === 0) await loadChannels(); // pick up the just-seeded defaults
+  }
   subscribeAllVoicePresenceObservers();
 
   if(!currentChannelId || !channels.some(c=>c.id===currentChannelId)){
@@ -1932,7 +1944,9 @@ async function renderChat(main){
   // Clear this channel's unread badge BEFORE building the sidebar HTML below
   // — clearing it after would mean the stale count is already baked into the
   // markup, and wouldn't visually disappear until the next click elsewhere.
-  if(activeChannel && activeChannel.type !== 'voice' && chatUnread[activeChannel.id]){
+  // Applies to every channel type, including voice — their chat can have
+  // unread messages too now.
+  if(activeChannel && chatUnread[activeChannel.id]){
     delete chatUnread[activeChannel.id];
   }
 
@@ -1995,6 +2009,7 @@ async function renderChat(main){
                 <div style="display:flex;align-items:center;gap:6px;padding:2px 0 2px 18px;">
                   <span class="chat-mini-avatar">${escapeHtml(chatInitial(o.name))}</span>
                   <span style="flex:1;font-size:11.5px;overflow-wrap:anywhere;">${escapeHtml(o.name)}${id===currentManagerId?' (you)':''}</span>
+                  ${o.deafened ? `<span title="Deafened" style="font-size:9.5px;font-weight:700;color:var(--status-absent);flex-shrink:0;">DEAF</span>` : ''}
                   ${o.muted ? `<span title="Muted" style="font-size:11px;flex-shrink:0;">&#128263;</span>` : ''}
                 </div>
               `).join('')}
@@ -2234,7 +2249,7 @@ async function renderVoiceRoom(){
     <div class="voice-room-compact">
       <div class="voice-participants">
         ${inThisRoom && participantIds.length ? participantIds.map(id=>`
-          <div class="voice-avatar" id="voice-avatar-${id}">${avatarHtml(id, voiceAvatarUrls, 'circle')}<div class="vname">${occupants[id].muted ? '&#128263; ' : ''}${escapeHtml(occupants[id].name)}${id===currentManagerId?' (you)':''}</div></div>
+          <div class="voice-avatar" id="voice-avatar-${id}">${avatarHtml(id, voiceAvatarUrls, 'circle')}<div class="vname">${occupants[id].deafened ? '<span style="font-weight:700;color:var(--status-absent);">DEAF</span> ' : ''}${occupants[id].muted ? '&#128263; ' : ''}${escapeHtml(occupants[id].name)}${id===currentManagerId?' (you)':''}</div></div>
         `).join('') : `<div class="hint">${inThisRoom ? "You're the only one here right now." : 'Nobody in this call yet.'}</div>`}
       </div>
       <div class="voice-controls">
@@ -2259,13 +2274,13 @@ async function renderVoiceRoom(){
   }
 
   const joinBtn = document.getElementById('voiceJoinBtn');
-  if(joinBtn) joinBtn.addEventListener('click', ()=> runVoiceAction(async ()=>{ await joinVoiceChannel(channel.id); await renderVoiceRoom(); }));
+  if(joinBtn) joinBtn.addEventListener('click', ()=> runVoiceAction(async ()=>{ await joinVoiceChannel(channel.id); await refreshVoiceUI(); }));
   const leaveBtn = document.getElementById('voiceLeaveBtn');
-  if(leaveBtn) leaveBtn.addEventListener('click', ()=> runVoiceAction(async ()=>{ await leaveVoiceChannel(); await renderVoiceRoom(); }));
+  if(leaveBtn) leaveBtn.addEventListener('click', ()=> runVoiceAction(async ()=>{ await leaveVoiceChannel(); await refreshVoiceUI(); }));
   const muteBtn = document.getElementById('voiceMuteBtn');
-  if(muteBtn) muteBtn.addEventListener('click', ()=> runVoiceAction(async ()=>{ await toggleVoiceMute(); await renderVoiceRoom(); }));
+  if(muteBtn) muteBtn.addEventListener('click', ()=> runVoiceAction(async ()=>{ await toggleVoiceMute(); await refreshVoiceUI(); }));
   const deafenBtn = document.getElementById('voiceDeafenBtn');
-  if(deafenBtn) deafenBtn.addEventListener('click', ()=> runVoiceAction(async ()=>{ await toggleDeafen(); await renderVoiceRoom(); }));
+  if(deafenBtn) deafenBtn.addEventListener('click', ()=> runVoiceAction(async ()=>{ await toggleDeafen(); await refreshVoiceUI(); }));
   document.querySelectorAll('.voice-participants [data-view-img]').forEach(img=>{
     img.addEventListener('click', ()=> openImageModal(img.dataset.viewImg));
   });
@@ -2869,9 +2884,11 @@ async function loadChannels(){
   const { data, error } = await supabaseClient.from('channels').select('*').order('created_at');
   channels = error ? [] : (data || []);
 }
+let defaultChannelsConfirmed = false;
 async function ensureDefaultChannelsOnce(){
+  if(defaultChannelsConfirmed) return;
   const done = await storageGet('migration:default-channels-v1');
-  if(done) return;
+  if(done){ defaultChannelsConfirmed = true; return; }
   const { count } = await supabaseClient.from('channels').select('*', { count:'exact', head:true });
   if(!count || count === 0){
     await supabaseClient.from('channels').insert([
@@ -2880,6 +2897,7 @@ async function ensureDefaultChannelsOnce(){
     ]);
   }
   await storageSet('migration:default-channels-v1', true);
+  defaultChannelsConfirmed = true;
 }
 async function createChannel(name, type){
   const { error } = await supabaseClient.from('channels').insert({ name, type, is_fixed:false, created_by: currentManagerId });
@@ -3059,10 +3077,10 @@ function subscribeVoicePresenceObserver(channelId){
     const state = ch.presenceState();
     const occ = {};
     Object.keys(state).forEach(key=>{
-      occ[key] = { name: state[key][0].name, muted: !!state[key][0].muted };
+      occ[key] = { name: state[key][0].name, muted: !!state[key][0].muted, deafened: !!state[key][0].deafened };
     });
     voiceChannelOccupants[channelId] = occ;
-    if(currentView === 'chat') requestRealtimeRefresh();
+    if(currentView === 'chat') refreshVoiceUI();
   });
   ch.subscribe();
   voiceObserverChannels[channelId] = ch;
@@ -3116,7 +3134,7 @@ async function joinVoiceChannel(channelId){
       await agoraClient.subscribe(user, mediaType);
       agoraRemoteUsers[user.uid] = user;
       user.audioTrack.play();
-      if(voiceDeafened){ try{ user.audioTrack.setVolume(0); }catch(e){} }
+      if(voiceDeafened){ try{ user.audioTrack.setVolume(1); }catch(e){} }
     }catch(e){ console.error('agora subscribe failed', e); }
   });
   agoraClient.on('user-unpublished', (user)=>{
@@ -3168,14 +3186,14 @@ async function joinVoiceChannel(channelId){
       const occ = {};
       Object.keys(state).forEach(key=>{
         const meta = state[key][0];
-        occ[key] = { name: meta.name, muted: !!meta.muted };
+        occ[key] = { name: meta.name, muted: !!meta.muted, deafened: !!meta.deafened };
       });
       voiceChannelOccupants[channelId] = occ;
-      if(currentView === 'chat') renderVoiceRoom();
+      if(currentView === 'chat') refreshVoiceUI();
     })
     .subscribe(async (status)=>{
       if(status === 'SUBSCRIBED'){
-        try{ await thisVoiceChannel.track({ name: myName, muted: voiceMuted }); }
+        try{ await thisVoiceChannel.track({ name: myName, muted: voiceMuted, deafened: voiceDeafened }); }
         catch(e){ console.error('voice presence track failed', e); }
       }
     });
@@ -3238,38 +3256,68 @@ async function leaveVoiceChannel(){
 }
 
 async function toggleVoiceMute(){
-  if(!agoraLocalAudioTrack) return;
+  if(!agoraLocalAudioTrack || !agoraClient) return;
   voiceMuted = !voiceMuted;
+  refreshVoiceUI(); // instant feedback — don't wait on the network operation below to update the button
 
-  // Agora's own track enable/disable is built and tested for exactly this —
-  // no equivalent of the raw-WebRTC "disabled track goes silent" bug we hit
-  // before, since Agora's SDK manages the actual media pipeline itself.
+  // Mute/unmute by unpublishing/republishing the SAME track object, rather
+  // than toggling its enabled state — this never touches microphone
+  // acquisition at all (the track itself is never destroyed or recreated),
+  // which avoids whatever was triggering a fresh permission prompt on
+  // every unmute with the enabled-toggle approach.
   try{
-    await agoraLocalAudioTrack.setEnabled(!voiceMuted);
+    if(voiceMuted){
+      await agoraClient.unpublish([agoraLocalAudioTrack]);
+    }else{
+      await agoraClient.publish([agoraLocalAudioTrack]);
+    }
   }catch(e){ console.error('agora mute failed', e); }
 
   // Let everyone else in the call see the updated mute state, not just yourself.
-  if(voiceRealtimeChannel){
-    const me = currentManagerRecord();
-    try{
-      voiceRealtimeChannel.track({ name: me ? me.name : 'Manager', muted: voiceMuted });
-    }catch(e){ console.error('mute broadcast failed', e); }
-  }
+  await broadcastVoicePresenceState();
+}
+
+async function broadcastVoicePresenceState(){
+  if(!voiceRealtimeChannel) return;
+  const me = currentManagerRecord();
+  try{
+    await voiceRealtimeChannel.track({ name: me ? me.name : 'Manager', muted: voiceMuted, deafened: voiceDeafened });
+  }catch(e){ console.error('presence broadcast failed', e); }
 }
 
 // Deafen mutes what you HEAR, not just what you send. Turning it on also
 // mutes your mic (Discord's convention — you probably shouldn't be talking
 // if you can't hear anyone), but turning it back off does not auto-unmute;
 // your mic state stays whatever you left it at.
+// Updates the sidebar + voice room from state that's already correct
+// locally — no network round-trip, unlike a full refresh(). Mute, deafen,
+// and presence changes never actually change the channel list, so there's
+// nothing to re-fetch; re-fetching anyway was the whole reason this used to
+// feel laggy on every single toggle.
+async function refreshVoiceUI(){
+  if(currentView !== 'chat') return;
+  const main = document.getElementById('main');
+  if(!main) return;
+  await renderChat(main, true);
+}
+
 async function toggleDeafen(){
   voiceDeafened = !voiceDeafened;
+  // Near-silent rather than literally 0 — some browsers throttle background
+  // tabs more aggressively once they're producing zero audio output at all,
+  // which was very likely why staying deafened + inactive was dropping calls.
+  // 1/100 is inaudible in practice but keeps the tab classified as "playing
+  // audio," avoiding that extra throttling.
   Object.values(agoraRemoteUsers).forEach(user=>{
     if(user.audioTrack){
-      try{ user.audioTrack.setVolume(voiceDeafened ? 0 : 100); }catch(e){}
+      try{ user.audioTrack.setVolume(voiceDeafened ? 1 : 100); }catch(e){}
     }
   });
+  refreshVoiceUI(); // instant feedback — the mute-triggering/broadcast calls below can take a moment
   if(voiceDeafened && !voiceMuted){
-    await toggleVoiceMute();
+    await toggleVoiceMute(); // this already broadcasts the updated state, including deafened
+  }else{
+    await broadcastVoicePresenceState();
   }
 }
 
