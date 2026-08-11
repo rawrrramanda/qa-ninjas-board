@@ -241,6 +241,16 @@
   }
   .modal-img{max-width:90vw;max-height:85vh;border-radius:8px;box-shadow:0 20px 60px rgba(0,0,0,0.4);}
   .modal-close{position:absolute;top:22px;right:28px;color:#fff;font-size:26px;cursor:pointer;background:none;border:none;}
+  .modal-card{background:#fff;border-radius:14px;padding:22px 24px;width:340px;max-width:90vw;max-height:85vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,0.4);}
+  .modal-card h3{font-family:'Space Grotesk';font-size:16px;margin:0 0 14px;}
+  .modal-card input[type=text]{width:100%;font-family:inherit;font-size:13.5px;padding:9px 11px;border-radius:8px;border:1px solid var(--border);margin-bottom:12px;}
+  .modal-member-row{display:flex;align-items:center;gap:8px;padding:6px 0;font-size:13.5px;}
+  .modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px;}
+  .crop-container{position:relative;width:260px;height:260px;margin:0 auto;overflow:hidden;border-radius:50%;background:#EEE;cursor:grab;touch-action:none;}
+  .crop-container.dragging{cursor:grabbing;}
+  .crop-container img{position:absolute;left:0;top:0;user-select:none;-webkit-user-drag:none;pointer-events:none;}
+  .crop-zoom-row{display:flex;align-items:center;gap:8px;margin-top:14px;}
+  .crop-zoom-row input[type=range]{flex:1;}
 
   .toast{
     position:fixed;bottom:22px;left:50%;transform:translateX(-50%);
@@ -323,6 +333,7 @@
   .chat-composer textarea{flex:1;resize:none;min-height:38px;max-height:120px;font-family:inherit;font-size:13.5px;padding:9px 11px;border-radius:8px;border:1px solid var(--border);}
   .chat-attach-btn{flex-shrink:0;padding:9px 11px;border-radius:8px;border:1px solid var(--border);background:#fff;cursor:pointer;font-size:15px;}
   .voice-room{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:30px;}
+  .voice-room-compact{flex-shrink:0;padding:14px 18px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:10px;align-items:center;}
   .voice-participants{display:flex;gap:16px;flex-wrap:wrap;justify-content:center;}
   .voice-avatar{display:flex;flex-direction:column;align-items:center;gap:8px;}
   .voice-avatar .circle{width:64px;height:64px;border-radius:50%;background:var(--accent-soft);color:var(--accent-dark);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:20px;border:3px solid transparent;}
@@ -486,6 +497,82 @@ let currentChannelId = null;
 let messagesCache = {};          // channelId -> [messages]
 let chatMessagesSubscribed = null; // which channel id currently has a live subscription
 const CHAT_BUCKET = 'chat-attachments';
+const AVATAR_BUCKET = 'avatars';
+let avatarUrlCache = {}; // storage path -> signed URL, cached for the session
+
+async function uploadAvatarBlob(managerId, blob){
+  try{
+    const existing = managersList.find(m=>m.user_id===managerId);
+    if(existing && existing.avatar_path){
+      try{ await supabaseClient.storage.from(AVATAR_BUCKET).remove([existing.avatar_path]); }catch(e){}
+    }
+    const path = `${managerId}/${Date.now()}.png`;
+    const { error: upErr } = await supabaseClient.storage.from(AVATAR_BUCKET).upload(path, blob, { contentType: 'image/png', upsert: false });
+    if(upErr){ console.error('avatar upload failed', upErr); showToast('Could not upload picture'); return false; }
+    const { error: dbErr } = await supabaseClient.from('managers').update({ avatar_path: path }).eq('user_id', managerId);
+    if(dbErr){ console.error('avatar db update failed', dbErr); showToast('Could not save picture'); return false; }
+    if(existing) existing.avatar_path = path;
+    avatarUrlCache = {};
+    await getAvatarSignedUrl(path); // warm the cache now, so the caller's immediate re-render already has it
+    return true;
+  }catch(e){ console.error('avatar upload failed', e); showToast('Could not upload picture'); return false; }
+}
+
+async function removeAvatar(managerId){
+  const existing = managersList.find(m=>m.user_id===managerId);
+  if(!existing || !existing.avatar_path) return true;
+  try{ await supabaseClient.storage.from(AVATAR_BUCKET).remove([existing.avatar_path]); }catch(e){}
+  const { error } = await supabaseClient.from('managers').update({ avatar_path: null }).eq('user_id', managerId);
+  if(error){ console.error('avatar remove failed', error); showToast('Could not remove picture'); return false; }
+  existing.avatar_path = null;
+  avatarUrlCache = {};
+  return true;
+}
+
+async function getAvatarSignedUrl(path){
+  if(!path) return null;
+  if(avatarUrlCache[path]) return avatarUrlCache[path];
+  try{
+    const { data, error } = await supabaseClient.storage.from(AVATAR_BUCKET).createSignedUrl(path, 3600);
+    if(error){ console.error('avatar signed url failed', error); return null; }
+    avatarUrlCache[path] = data?.signedUrl || null;
+    return avatarUrlCache[path];
+  }catch(e){ return null; }
+}
+
+// Batch-resolves signed URLs for a set of managers at once — call before
+// building any HTML that shows avatars, since signing is async but template
+// strings aren't.
+async function getAvatarUrlMapFor(managerIds){
+  const map = {};
+  await Promise.all([...new Set(managerIds)].map(async id=>{
+    const m = managersList.find(mm=>mm.user_id===id);
+    if(m && m.avatar_path) map[id] = await getAvatarSignedUrl(m.avatar_path);
+  }));
+  return map;
+}
+
+// Renders either the real picture or an initials circle, sized/styled by
+// whatever class the call site already uses for its avatar circles.
+function avatarHtml(managerId, urlMap, sizeClass){
+  const url = urlMap && urlMap[managerId];
+  const name = managerName(managerId);
+  if(url) return `<img class="${sizeClass}" src="${url}" style="border-radius:50%;object-fit:cover;">`;
+  return `<div class="${sizeClass}">${escapeHtml(chatInitial(name))}</div>`;
+}
+
+// Pre-fetches signed URLs for every manager's avatar right after the roster
+// loads, so synchronous render functions (which can't easily await mid-render)
+// can just read straight from the already-warm cache below.
+async function warmAvatarUrlCache(){
+  await Promise.all(managersList.filter(m=>m.avatar_path).map(m=> getAvatarSignedUrl(m.avatar_path)));
+}
+function avatarHtmlSync(managerId, sizeClass){
+  const m = managersList.find(mm=>mm.user_id===managerId);
+  const url = m && m.avatar_path ? avatarUrlCache[m.avatar_path] : null;
+  if(url) return `<img class="${sizeClass}" src="${url}" style="border-radius:50%;object-fit:cover;">`;
+  return `<div class="${sizeClass}">${escapeHtml(chatInitial(managerName(managerId)))}</div>`;
+}
 
 // Online status — tracked app-wide the moment anyone signs in, not just while
 // they're on the Team Chat tab.
@@ -504,11 +591,13 @@ function setLastRead(channelId, iso){
 }
 
 let editingMessageId = null;     // which message (if any) is currently being edited inline
+let chatRenderTarget = 'chatMain'; // which element renderChatMessages targets — swaps when embedded in a voice room
 
 // Voice channel state
 let voiceChannelId = null;       // which voice channel (if any) we're currently in
 let voiceRealtimeChannel = null; // Supabase presence channel — sidebar occupancy display only, not the audio itself
 let voiceMuted = false;
+let voiceDeafened = false;   // true = not hearing anyone; also force-mutes the mic when turned on
 let voiceChannelOccupants = {};  // channelId -> { peerId: {name} } — who's in each voice channel, whether you've joined it or not
 let voiceObserverChannels = {};  // channelId -> Realtime channel object, for passively watching occupancy without joining audio
 
@@ -1844,7 +1933,10 @@ async function renderChat(main){
   const textChannels = channels.filter(c=>c.type==='text');
   const voiceChannels = channels.filter(c=>c.type==='voice');
   const dmChannels = channels.filter(c=>c.type==='dm');
+  const groupChannels = channels.filter(c=>c.type==='group');
   const otherManagers = managersList.filter(m=>m.user_id !== currentManagerId);
+  await Promise.all(groupChannels.map(c=> channelMembersCache[c.id] === undefined ? loadChannelMembers(c.id) : null));
+  const sidebarAvatarUrls = await getAvatarUrlMapFor(otherManagers.map(m=>m.user_id));
 
   main.innerHTML = `
     <div class="page-head">
@@ -1866,11 +1958,21 @@ async function renderChat(main){
           const otherId = c.dm_user_a === currentManagerId ? c.dm_user_b : c.dm_user_a;
           return `
           <button class="chat-channel-btn ${c.id===currentChannelId?'active':''}" data-channel="${c.id}">
-            <span class="status-dot ${onlineManagers[otherId] ? 'online' : 'offline'}"></span>
+            <span style="position:relative;display:inline-flex;">${avatarHtml(otherId, sidebarAvatarUrls, 'chat-mini-avatar')}<span class="status-dot ${onlineManagers[otherId] ? 'online' : 'offline'}" style="position:absolute;bottom:-1px;right:-1px;border:1.5px solid #fff;"></span></span>
             ${escapeHtml(dmDisplayName(c))}
             ${chatUnread[c.id] ? `<span class="chan-unread">${chatUnread[c.id]}</span>` : ''}
           </button>
         `;}).join('')}
+
+        <div class="chat-channels-group">Group chats</div>
+        ${groupChannels.length === 0 ? `<div class="hint" style="padding:0 12px 6px;">No groups yet.</div>` : ''}
+        ${groupChannels.map(c=>`
+          <button class="chat-channel-btn ${c.id===currentChannelId?'active':''}" data-channel="${c.id}">
+            &#128101;&nbsp;${escapeHtml(groupDisplayName(c))}
+            ${chatUnread[c.id] ? `<span class="chan-unread">${chatUnread[c.id]}</span>` : ''}
+          </button>
+        `).join('')}
+        <div style="padding:4px 12px 8px;"><button class="btn btn-sm" id="newGroupBtn" style="width:100%;justify-content:center;">+ New group</button></div>
 
         <div class="chat-channels-group">Voice channels</div>
         ${voiceChannels.map(c=>{
@@ -1897,7 +1999,7 @@ async function renderChat(main){
         <div class="chat-channels-group">Managers</div>
         ${otherManagers.map(m=>`
           <button class="chat-channel-btn" data-start-dm="${m.user_id}">
-            <span class="status-dot ${onlineManagers[m.user_id] ? 'online' : 'offline'}"></span>
+            <span style="position:relative;display:inline-flex;">${avatarHtml(m.user_id, sidebarAvatarUrls, 'chat-mini-avatar')}<span class="status-dot ${onlineManagers[m.user_id] ? 'online' : 'offline'}" style="position:absolute;bottom:-1px;right:-1px;border:1.5px solid #fff;"></span></span>
             ${escapeHtml(m.name)}
           </button>
         `).join('')}
@@ -1930,6 +2032,7 @@ async function renderChat(main){
     const ok = await createChannel(name, type);
     if(ok){ showToast('Channel created'); refresh(); }
   });
+  document.getElementById('newGroupBtn').addEventListener('click', openNewGroupModal);
 
   if(!activeChannel){
     document.getElementById('chatMain').innerHTML = `<div class="empty-state"><div class="big">No channels yet</div></div>`;
@@ -1937,8 +2040,9 @@ async function renderChat(main){
   }
 
   if(activeChannel.type === 'voice'){
-    renderVoiceRoom();
+    await renderVoiceRoom();
   }else{
+    chatRenderTarget = 'chatMain';
     await loadMessages(activeChannel.id);
     subscribeToChannelMessages(activeChannel.id);
     // The unread badge was already cleared earlier, before the sidebar
@@ -1950,18 +2054,23 @@ async function renderChat(main){
 }
 
 async function renderChatMessages(isInitial){
-  const el = document.getElementById('chatMain');
+  const el = document.getElementById(chatRenderTarget);
   if(!el) return;
+  const embedded = chatRenderTarget !== 'chatMain';
   const channel = channels.find(c=>c.id===currentChannelId);
   if(!channel) return;
+  if(channel.type === 'group' && channelMembersCache[channel.id] === undefined){
+    await loadChannelMembers(channel.id);
+  }
   const msgs = messagesCache[currentChannelId] || [];
   const signedUrls = await getChatSignedUrls(msgs.map(m=>m.attachment_path));
+  const avatarUrls = await getAvatarUrlMapFor(msgs.map(m=>m.user_id));
   const pinned = msgs.filter(m=>m.pinned);
-  const headerName = channel.type === 'dm' ? dmDisplayName(channel) : channel.name;
-  const headerPrefix = channel.type === 'dm' ? '' : '#&nbsp;';
+  const headerName = channel.type === 'dm' ? dmDisplayName(channel) : (channel.type === 'group' ? groupDisplayName(channel) : channel.name);
+  const headerPrefix = (channel.type === 'dm' || channel.type === 'group') ? '' : '#&nbsp;';
 
   el.innerHTML = `
-    <div class="chat-header">${headerPrefix}${escapeHtml(headerName)}${!channel.is_fixed ? `<button class="btn btn-sm btn-danger" id="deleteChannelBtn">Delete channel</button>` : ''}</div>
+    ${embedded ? '' : `<div class="chat-header">${headerPrefix}${escapeHtml(headerName)}${!channel.is_fixed ? `<button class="btn btn-sm btn-danger" id="deleteChannelBtn">Delete channel</button>` : ''}</div>`}
     ${pinned.length ? `
       <div class="pinned-panel">
         <strong style="font-size:11px;text-transform:uppercase;letter-spacing:0.03em;color:var(--ink-soft);">&#128204; Pinned (${pinned.length})</strong>
@@ -1982,7 +2091,7 @@ async function renderChatMessages(isInitial){
         const isEditing = editingMessageId === m.id;
         return `
         <div class="chat-msg ${m.pinned ? 'pinned' : ''}" data-msg-id="${m.id}">
-          <div class="chat-msg-avatar">${escapeHtml(chatInitial(name))}</div>
+          ${avatarHtml(m.user_id, avatarUrls, 'chat-msg-avatar')}
           <div style="min-width:0;flex:1;">
             <span class="chat-msg-name">${escapeHtml(name)}</span><span class="chat-msg-time">${fmtChatTime(m.created_at)}</span>
             ${m.edited_at ? `<span class="chat-msg-time">(edited)</span>` : ''}
@@ -2012,7 +2121,7 @@ async function renderChatMessages(isInitial){
     </div>
     <div class="chat-composer">
       <label class="chat-attach-btn" title="Attach a file or image">&#128206;<input type="file" id="chatFileInput" style="display:none;"></label>
-      <textarea id="chatBodyInput" placeholder="Message ${channel.type==='dm' ? escapeHtml(headerName) : '#'+escapeHtml(channel.name)}" rows="1"></textarea>
+      <textarea id="chatBodyInput" placeholder="Message ${(channel.type==='dm'||channel.type==='group') ? escapeHtml(headerName) : '#'+escapeHtml(channel.name)}" rows="1"></textarea>
       <button class="btn btn-primary" id="chatSendBtn">Send</button>
     </div>
   `;
@@ -2020,13 +2129,15 @@ async function renderChatMessages(isInitial){
   const list = document.getElementById('chatMessagesList');
   if(list && !editingMessageId) list.scrollTop = list.scrollHeight;
 
-  const delBtn = document.getElementById('deleteChannelBtn');
-  if(delBtn){
-    delBtn.addEventListener('click', async ()=>{
-      if(!confirm(`Delete this ${channel.type==='dm'?'conversation':'channel'}? This deletes all its messages too.`)) return;
-      const ok = await deleteChannelById(channel.id);
-      if(ok){ currentChannelId = null; refresh(); }
-    });
+  if(!embedded){
+    const delBtn = document.getElementById('deleteChannelBtn');
+    if(delBtn){
+      delBtn.addEventListener('click', async ()=>{
+        if(!confirm(`Delete this ${channel.type==='dm'?'conversation':'channel'}? This deletes all its messages too.`)) return;
+        const ok = await deleteChannelById(channel.id);
+        if(ok){ currentChannelId = null; refresh(); }
+      });
+    }
   }
 
   document.querySelectorAll('[data-view-img]').forEach(img=>{
@@ -2099,7 +2210,7 @@ async function renderChatMessages(isInitial){
   });
 }
 
-function renderVoiceRoom(){
+async function renderVoiceRoom(){
   const el = document.getElementById('chatMain');
   if(!el) return;
   const channel = channels.find(c=>c.id===currentChannelId);
@@ -2107,23 +2218,25 @@ function renderVoiceRoom(){
   const inThisRoom = voiceChannelId === channel.id;
   const occupants = voiceChannelOccupants[channel.id] || {};
   const participantIds = Object.keys(occupants);
+  const voiceAvatarUrls = await getAvatarUrlMapFor(participantIds);
 
   el.innerHTML = `
     <div class="chat-header">&#128266;&nbsp;${escapeHtml(channel.name)}${!channel.is_fixed ? `<button class="btn btn-sm btn-danger" id="deleteChannelBtn">Delete channel</button>` : ''}</div>
-    <div class="voice-room">
+    <div class="voice-room-compact">
       <div class="voice-participants">
         ${inThisRoom && participantIds.length ? participantIds.map(id=>`
-          <div class="voice-avatar" id="voice-avatar-${id}"><div class="circle">${escapeHtml(chatInitial(occupants[id].name))}</div><div class="vname">${occupants[id].muted ? '&#128263; ' : ''}${escapeHtml(occupants[id].name)}${id===currentManagerId?' (you)':''}</div></div>
+          <div class="voice-avatar" id="voice-avatar-${id}">${avatarHtml(id, voiceAvatarUrls, 'circle')}<div class="vname">${occupants[id].muted ? '&#128263; ' : ''}${escapeHtml(occupants[id].name)}${id===currentManagerId?' (you)':''}</div></div>
         `).join('') : `<div class="hint">${inThisRoom ? "You're the only one here right now." : 'Nobody in this call yet.'}</div>`}
       </div>
       <div class="voice-controls">
         ${inThisRoom ? `
           <button class="btn ${voiceMuted?'btn-danger':''}" id="voiceMuteBtn">${voiceMuted ? '&#128263; Unmute' : '&#127908; Mute'}</button>
+          <button class="btn ${voiceDeafened?'btn-danger':''}" id="voiceDeafenBtn">${voiceDeafened ? '&#128264; Undeafen' : '&#127911; Deafen'}</button>
           <button class="btn btn-danger" id="voiceLeaveBtn">Leave call</button>
         ` : `<button class="btn btn-primary" id="voiceJoinBtn">Join voice</button>`}
       </div>
-      <div class="hint" style="max-width:360px;text-align:center;">Free peer-to-peer audio — best for small calls. If someone's on a very restrictive network, they may occasionally have trouble connecting.</div>
     </div>
+    <div id="voiceChatMessages" style="flex:1;display:flex;flex-direction:column;min-height:0;"></div>
   `;
 
   const delBtn = document.getElementById('deleteChannelBtn');
@@ -2137,11 +2250,22 @@ function renderVoiceRoom(){
   }
 
   const joinBtn = document.getElementById('voiceJoinBtn');
-  if(joinBtn) joinBtn.addEventListener('click', ()=> runVoiceAction(async ()=>{ await joinVoiceChannel(channel.id); renderVoiceRoom(); }));
+  if(joinBtn) joinBtn.addEventListener('click', ()=> runVoiceAction(async ()=>{ await joinVoiceChannel(channel.id); await renderVoiceRoom(); }));
   const leaveBtn = document.getElementById('voiceLeaveBtn');
-  if(leaveBtn) leaveBtn.addEventListener('click', ()=> runVoiceAction(async ()=>{ await leaveVoiceChannel(); renderVoiceRoom(); }));
+  if(leaveBtn) leaveBtn.addEventListener('click', ()=> runVoiceAction(async ()=>{ await leaveVoiceChannel(); await renderVoiceRoom(); }));
   const muteBtn = document.getElementById('voiceMuteBtn');
-  if(muteBtn) muteBtn.addEventListener('click', ()=> runVoiceAction(async ()=>{ await toggleVoiceMute(); renderVoiceRoom(); }));
+  if(muteBtn) muteBtn.addEventListener('click', ()=> runVoiceAction(async ()=>{ await toggleVoiceMute(); await renderVoiceRoom(); }));
+  const deafenBtn = document.getElementById('voiceDeafenBtn');
+  if(deafenBtn) deafenBtn.addEventListener('click', ()=> runVoiceAction(async ()=>{ await toggleDeafen(); await renderVoiceRoom(); }));
+
+  // Persistent chat for this voice channel — same messaging system as every
+  // other channel, just embedded below the controls instead of filling the
+  // whole panel.
+  chatRenderTarget = 'voiceChatMessages';
+  await loadMessages(channel.id);
+  subscribeToChannelMessages(channel.id);
+  setLastRead(channel.id, new Date().toISOString());
+  await renderChatMessages();
 }
 
 function exportMonthCsv(){
@@ -2559,6 +2683,161 @@ function exportPerformanceCsv(){
 }
 
 /* ================= Modal ================= */
+function openNewGroupModal(){
+  const otherManagers = managersList.filter(m=>m.user_id !== currentManagerId);
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal-card">
+      <h3>New group chat</h3>
+      <input type="text" id="groupNameInput" placeholder="Group name (optional)">
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.03em;color:var(--ink-faint);margin-bottom:4px;">Add people</div>
+      ${otherManagers.map(m=>`
+        <label class="modal-member-row">
+          <input type="checkbox" value="${m.user_id}" class="group-member-check">
+          ${escapeHtml(m.name)}
+        </label>
+      `).join('')}
+      <div class="modal-actions">
+        <button class="btn btn-sm" id="cancelGroupBtn">Cancel</button>
+        <button class="btn btn-sm btn-primary" id="confirmGroupBtn">Create</button>
+      </div>
+    </div>
+  `;
+  overlay.addEventListener('click', (e)=>{ if(e.target === overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
+
+  document.getElementById('cancelGroupBtn').addEventListener('click', ()=> overlay.remove());
+  document.getElementById('confirmGroupBtn').addEventListener('click', async ()=>{
+    const name = document.getElementById('groupNameInput').value.trim();
+    const memberIds = [...document.querySelectorAll('.group-member-check:checked')].map(el=>el.value);
+    if(memberIds.length === 0){ showToast('Pick at least one person'); return; }
+    overlay.remove();
+    await createGroupChat(name, memberIds);
+  });
+}
+
+function openAvatarCropModal(targetManagerId, onSaved){
+  const fileInput = document.createElement('input');
+  fileInput.type = 'file';
+  fileInput.accept = 'image/*';
+  fileInput.addEventListener('change', ()=>{
+    const file = fileInput.files[0];
+    if(file) openCropperWithFile(targetManagerId, file, onSaved);
+  });
+  fileInput.click();
+}
+
+function openCropperWithFile(targetManagerId, file, onSaved){
+  const CONTAINER_SIZE = 260;
+  const OUTPUT_SIZE = 300;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal-card" style="width:320px;text-align:center;">
+      <h3>Update profile picture</h3>
+      <div class="crop-container" id="cropContainer"><img id="cropImg" alt=""></div>
+      <div class="crop-zoom-row">
+        <span style="font-size:12px;">&#128269;</span>
+        <input type="range" id="zoomSlider" min="100" max="300" value="100">
+      </div>
+      <div class="hint" style="margin-top:8px;">Drag to reposition, use the slider to zoom.</div>
+      <div class="modal-actions">
+        <button class="btn btn-sm" id="cancelCropBtn">Cancel</button>
+        <button class="btn btn-sm btn-primary" id="saveCropBtn">Save</button>
+      </div>
+    </div>
+  `;
+  overlay.addEventListener('click', (e)=>{ if(e.target === overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
+  document.getElementById('cancelCropBtn').addEventListener('click', ()=> overlay.remove());
+
+  const img = document.getElementById('cropImg');
+  const container = document.getElementById('cropContainer');
+  const zoomSlider = document.getElementById('zoomSlider');
+  const objectUrl = URL.createObjectURL(file);
+  img.src = objectUrl;
+
+  let baseScale = 1, userScale = 1, offsetX = 0, offsetY = 0;
+  let dragging = false, dragStartX = 0, dragStartY = 0, startOffsetX = 0, startOffsetY = 0;
+
+  function clampOffsets(){
+    const totalScale = baseScale * userScale;
+    const dispW = img.naturalWidth * totalScale;
+    const dispH = img.naturalHeight * totalScale;
+    offsetX = Math.min(0, Math.max(CONTAINER_SIZE - dispW, offsetX));
+    offsetY = Math.min(0, Math.max(CONTAINER_SIZE - dispH, offsetY));
+  }
+  function applyTransform(){
+    const totalScale = baseScale * userScale;
+    img.style.width = (img.naturalWidth * totalScale) + 'px';
+    img.style.height = (img.naturalHeight * totalScale) + 'px';
+    img.style.transform = `translate(${offsetX}px, ${offsetY}px)`;
+  }
+
+  img.onload = ()=>{
+    // Cover-fit: the smaller natural dimension exactly fills the circular viewport at userScale=1.
+    baseScale = CONTAINER_SIZE / Math.min(img.naturalWidth, img.naturalHeight);
+    userScale = 1;
+    zoomSlider.value = 100;
+    offsetX = (CONTAINER_SIZE - img.naturalWidth * baseScale) / 2;
+    offsetY = (CONTAINER_SIZE - img.naturalHeight * baseScale) / 2;
+    clampOffsets();
+    applyTransform();
+  };
+
+  zoomSlider.addEventListener('input', ()=>{
+    // Keep the center point stable while zooming, rather than the top-left corner.
+    const oldTotal = baseScale * userScale;
+    const cx = CONTAINER_SIZE/2 - offsetX, cy = CONTAINER_SIZE/2 - offsetY; // focal point in image-display coords
+    userScale = zoomSlider.value / 100;
+    const newTotal = baseScale * userScale;
+    offsetX = CONTAINER_SIZE/2 - cx * (newTotal/oldTotal);
+    offsetY = CONTAINER_SIZE/2 - cy * (newTotal/oldTotal);
+    clampOffsets();
+    applyTransform();
+  });
+
+  const startDrag = (x,y)=>{ dragging = true; dragStartX = x; dragStartY = y; startOffsetX = offsetX; startOffsetY = offsetY; container.classList.add('dragging'); };
+  const moveDrag = (x,y)=>{
+    if(!dragging) return;
+    offsetX = startOffsetX + (x - dragStartX);
+    offsetY = startOffsetY + (y - dragStartY);
+    clampOffsets();
+    applyTransform();
+  };
+  const endDrag = ()=>{ dragging = false; container.classList.remove('dragging'); };
+
+  container.addEventListener('mousedown', e=> startDrag(e.clientX, e.clientY));
+  window.addEventListener('mousemove', e=> moveDrag(e.clientX, e.clientY));
+  window.addEventListener('mouseup', endDrag);
+  container.addEventListener('touchstart', e=>{ const t=e.touches[0]; startDrag(t.clientX, t.clientY); }, {passive:true});
+  container.addEventListener('touchmove', e=>{ const t=e.touches[0]; moveDrag(t.clientX, t.clientY); }, {passive:true});
+  container.addEventListener('touchend', endDrag);
+
+  document.getElementById('saveCropBtn').addEventListener('click', async ()=>{
+    const saveBtn = document.getElementById('saveCropBtn');
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Saving…';
+    const totalScale = baseScale * userScale;
+    const outputScale = OUTPUT_SIZE / CONTAINER_SIZE;
+    const canvas = document.createElement('canvas');
+    canvas.width = OUTPUT_SIZE; canvas.height = OUTPUT_SIZE;
+    const ctx = canvas.getContext('2d');
+    // Map the visible crop-container region back to source image pixel coordinates.
+    const sx = -offsetX / totalScale, sy = -offsetY / totalScale;
+    const sSize = CONTAINER_SIZE / totalScale;
+    ctx.drawImage(img, sx, sy, sSize, sSize, 0, 0, OUTPUT_SIZE, OUTPUT_SIZE);
+    canvas.toBlob(async (blob)=>{
+      const ok = await uploadAvatarBlob(targetManagerId, blob);
+      URL.revokeObjectURL(objectUrl);
+      overlay.remove();
+      if(ok){ showToast('Profile picture updated'); if(onSaved) onSaved(); }
+    }, 'image/png', 0.92);
+  });
+}
+
 function openImageModal(src){
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
@@ -2637,6 +2916,38 @@ async function findOrCreateDM(otherId){
     return;
   }
   channels.push(data);
+  currentChannelId = data.id;
+  refresh();
+}
+
+/* ---- Group chats: any manager can create one and add anyone ---- */
+let channelMembersCache = {}; // channelId -> [userId, ...]
+
+async function loadChannelMembers(channelId){
+  const { data, error } = await supabaseClient.from('channel_members').select('user_id').eq('channel_id', channelId);
+  channelMembersCache[channelId] = error ? [] : data.map(r=>r.user_id);
+}
+
+function groupDisplayName(channel){
+  if(channel.name && channel.name.trim()) return channel.name;
+  const memberIds = (channelMembersCache[channel.id] || []).filter(id=>id !== currentManagerId);
+  return memberIds.map(managerName).join(', ') || 'Group chat';
+}
+
+async function createGroupChat(name, memberIds){
+  const { data, error } = await supabaseClient.from('channels').insert({
+    name: name || '', type: 'group', is_fixed: false, created_by: currentManagerId
+  }).select().single();
+  if(error){ console.error('create group failed', error); showToast('Could not create group'); return; }
+
+  const allMembers = [...new Set([currentManagerId, ...memberIds])];
+  const { error: memberError } = await supabaseClient.from('channel_members').insert(
+    allMembers.map(uid => ({ channel_id: data.id, user_id: uid }))
+  );
+  if(memberError){ console.error('add group members failed', memberError); showToast('Group created, but adding members failed'); }
+
+  channels.push(data);
+  channelMembersCache[data.id] = allMembers;
   currentChannelId = data.id;
   refresh();
 }
@@ -2782,6 +3093,7 @@ async function joinVoiceChannel(channelId){
   voiceChannelId = channelId;
   voiceChannelOccupants[channelId] = {};
   voiceMuted = false;
+  voiceDeafened = false;
   agoraRemoteUsers = {};
 
   agoraClient = AgoraRTC.createClient({ mode: 'rtc', codec: 'vp8' });
@@ -2792,6 +3104,7 @@ async function joinVoiceChannel(channelId){
       await agoraClient.subscribe(user, mediaType);
       agoraRemoteUsers[user.uid] = user;
       user.audioTrack.play();
+      if(voiceDeafened){ try{ user.audioTrack.setVolume(0); }catch(e){} }
     }catch(e){ console.error('agora subscribe failed', e); }
   });
   agoraClient.on('user-unpublished', (user)=>{
@@ -2873,6 +3186,7 @@ async function leaveVoiceChannel(){
   agoraRemoteUsers = {};
   voiceChannelOccupants[leftChannelId] = {};
   voiceMuted = false;
+  voiceDeafened = false;
 
   // Real teardown (closing the Agora connection, releasing the mic) happens
   // right after, in the background — deferred so it can't delay the visual
@@ -2928,6 +3242,22 @@ async function toggleVoiceMute(){
     try{
       voiceRealtimeChannel.track({ name: me ? me.name : 'Manager', muted: voiceMuted });
     }catch(e){ console.error('mute broadcast failed', e); }
+  }
+}
+
+// Deafen mutes what you HEAR, not just what you send. Turning it on also
+// mutes your mic (Discord's convention — you probably shouldn't be talking
+// if you can't hear anyone), but turning it back off does not auto-unmute;
+// your mic state stays whatever you left it at.
+async function toggleDeafen(){
+  voiceDeafened = !voiceDeafened;
+  Object.values(agoraRemoteUsers).forEach(user=>{
+    if(user.audioTrack){
+      try{ user.audioTrack.setVolume(voiceDeafened ? 0 : 100); }catch(e){}
+    }
+  });
+  if(voiceDeafened && !voiceMuted){
+    await toggleVoiceMute();
   }
 }
 
@@ -3072,6 +3402,7 @@ function handleKvStoreChange(payload){
 
 async function handleManagersChange(){
   await loadManagersList();
+  await warmAvatarUrlCache();
   requestRealtimeRefresh();
 }
 
@@ -3200,6 +3531,7 @@ async function completeSignIn(userId){
   render();
   await ensureOwnManagerProfile();
   await loadManagersList();
+  await warmAvatarUrlCache();
   const admin = managersList.find(m=>m.is_admin);
   await ensureSeedRoster(admin ? admin.user_id : userId);
   await migrateStatusCodesOnce();
@@ -3242,6 +3574,14 @@ function renderAccessSettingsPanel(){
   if(!me) return '';
   const nameEditor = `
     <div class="settings-panel">
+      <label>Profile picture</label>
+      <div class="row" style="align-items:center;">
+        ${avatarHtmlSync(currentManagerId, 'chat-msg-avatar')}
+        <button class="btn btn-sm" id="changeMyAvatar">Change picture</button>
+        ${me.avatar_path ? `<button class="btn btn-sm btn-danger" id="removeMyAvatar">Remove</button>` : ''}
+      </div>
+    </div>
+    <div class="settings-panel">
       <label>Your name</label>
       <div class="row">
         <input type="text" id="myNameInput" value="${escapeAttr(me.name)}">
@@ -3263,6 +3603,7 @@ function renderAccessSettingsPanel(){
         <label>Manager accounts</label>
         ${managersList.map(m=>`
           <div class="row" style="margin-bottom:8px;flex-wrap:wrap;">
+            ${avatarHtmlSync(m.user_id, 'chat-mini-avatar')}
             <span style="width:150px;font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px;">
               <span class="status-dot ${onlineManagers[m.user_id] ? 'online' : 'offline'}" title="${onlineManagers[m.user_id] ? 'Online' : 'Offline'}"></span>
               ${escapeHtml(m.name)}${m.user_id===currentManagerId ? ' <span style="color:var(--ink-faint);font-weight:400;">(you)</span>' : ''}
@@ -3272,6 +3613,8 @@ function renderAccessSettingsPanel(){
             ${m.user_id!==currentManagerId ? `<button class="btn btn-sm" data-toggle-admin="${m.user_id}" data-currently="${m.is_admin}">${m.is_admin ? 'Remove admin' : 'Make admin'}</button>` : ''}
             ${m.email ? `<button class="btn btn-sm" data-reset-pw="${escapeAttr(m.email)}">Send password reset</button>` : ''}
             ${m.user_id!==currentManagerId ? `<button class="btn btn-sm" data-set-pw="${m.user_id}" data-set-pw-name="${escapeAttr(m.name)}">Set password directly</button>` : ''}
+            ${m.user_id!==currentManagerId ? `<button class="btn btn-sm" data-admin-set-avatar="${m.user_id}">Change picture</button>` : ''}
+            ${m.user_id!==currentManagerId && m.avatar_path ? `<button class="btn btn-sm btn-danger" data-admin-remove-avatar="${m.user_id}">Remove picture</button>` : ''}
           </div>
         `).join('')}
         <div class="hint" style="margin-top:8px;">"Send password reset" emails them a secure link to set their own. "Set password directly" lets you type a new one yourself right now — useful if email isn't reliable for your team. To remove an account entirely, use your Supabase dashboard → Authentication → Users.</div>
@@ -3353,6 +3696,25 @@ function wireAccessSettingsPanel(){
       });
       if(error || data?.error){ console.error('set password failed', error || data.error); showToast('Could not set password — check console'); return; }
       showToast(`Password updated for ${targetName}`);
+    });
+  });
+
+  const changeMyAvatarBtn = document.getElementById('changeMyAvatar');
+  if(changeMyAvatarBtn) changeMyAvatarBtn.addEventListener('click', ()=>{
+    openAvatarCropModal(currentManagerId, refresh);
+  });
+  const removeMyAvatarBtn = document.getElementById('removeMyAvatar');
+  if(removeMyAvatarBtn) removeMyAvatarBtn.addEventListener('click', async ()=>{
+    const ok = await removeAvatar(currentManagerId);
+    if(ok){ showToast('Profile picture removed'); refresh(); }
+  });
+  document.querySelectorAll('[data-admin-set-avatar]').forEach(btn=>{
+    btn.addEventListener('click', ()=> openAvatarCropModal(btn.dataset.adminSetAvatar, refresh));
+  });
+  document.querySelectorAll('[data-admin-remove-avatar]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const ok = await removeAvatar(btn.dataset.adminRemoveAvatar);
+      if(ok){ showToast('Profile picture removed'); refresh(); }
     });
   });
 
