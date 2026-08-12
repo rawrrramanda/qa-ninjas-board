@@ -2133,6 +2133,17 @@ async function renderChatMessages(isInitial){
   const el = document.getElementById(chatRenderTarget);
   if(!el) return;
   const embedded = chatRenderTarget !== 'chatMain';
+
+  // Capture whatever's currently typed (and cursor position) before rebuilding
+  // the DOM below — otherwise ANY re-render (opening the emoji picker, a
+  // reaction changing, someone else's message arriving) would silently wipe
+  // out an unsent draft, since the composer gets recreated from scratch.
+  const existingInput = document.getElementById('chatBodyInput');
+  const draftText = existingInput ? existingInput.value : '';
+  const draftSelStart = existingInput ? existingInput.selectionStart : null;
+  const draftSelEnd = existingInput ? existingInput.selectionEnd : null;
+  const draftWasFocused = !!(existingInput && document.activeElement === existingInput);
+
   const channel = channels.find(c=>c.id===currentChannelId);
   if(!channel) return;
   if(channel.type === 'group' && channelMembersCache[channel.id] === undefined){
@@ -2198,13 +2209,15 @@ async function renderChatMessages(isInitial){
               return `<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px;">
                 ${Object.entries(byEmoji).map(([emoji, list])=>{
                   const iReacted = list.some(r=>r.user_id === currentManagerId);
-                  return `<button class="reaction-pill ${iReacted?'mine':''}" data-toggle-reaction="${m.id}" data-emoji="${emoji}">${emoji} ${list.length}</button>`;
+                  const names = list.map(r=>managerName(r.user_id)).join(', ');
+                  return `<button class="reaction-pill ${iReacted?'mine':''}" data-toggle-reaction="${m.id}" data-emoji="${emoji}" title="${escapeAttr(names)}">${emoji} ${list.length}</button>`;
                 }).join('')}
               </div>`;
             })()}
             ${!isEditing ? `
               <div style="margin-top:3px;position:relative;">
                 ${isMine ? `<button class="chat-msg-action" data-edit-msg="${m.id}">Edit</button>` : ''}
+                ${isMine ? `<button class="chat-msg-action" data-delete-msg="${m.id}" data-attach-path="${escapeAttr(m.attachment_path||'')}" data-is-sticker="${isSticker}">Delete</button>` : ''}
                 <button class="chat-msg-action" data-toggle-pin="${m.id}" data-currently-pinned="${!!m.pinned}">${m.pinned ? 'Unpin' : 'Pin'}</button>
                 <button class="chat-msg-action" data-open-reaction-picker="${m.id}">&#128512; React</button>
                 ${reactionPickerForMessage === m.id ? `
@@ -2249,6 +2262,19 @@ async function renderChatMessages(isInitial){
     </div>
   `;
 
+  // Restore whatever was typed before this render, so opening the emoji
+  // picker or a reaction arriving live never loses an unsent draft.
+  if(draftText){
+    const newInput = document.getElementById('chatBodyInput');
+    if(newInput){
+      newInput.value = draftText;
+      if(draftWasFocused){
+        newInput.focus();
+        if(draftSelStart !== null) newInput.selectionStart = newInput.selectionEnd = Math.min(draftSelEnd || draftSelStart, draftText.length);
+      }
+    }
+  }
+
   const list = document.getElementById('chatMessagesList');
   if(list && !editingMessageId) list.scrollTop = list.scrollHeight;
 
@@ -2272,6 +2298,14 @@ async function renderChatMessages(isInitial){
 
   document.querySelectorAll('[data-edit-msg]').forEach(btn=>{
     btn.addEventListener('click', ()=>{ editingMessageId = btn.dataset.editMsg; renderChatMessages(); });
+  });
+  document.querySelectorAll('[data-delete-msg]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      if(!confirm('Delete this message? This cannot be undone.')) return;
+      const isSticker = btn.dataset.isSticker === 'true';
+      const ok = await deleteMessage(btn.dataset.deleteMsg, btn.dataset.attachPath, isSticker);
+      if(ok) renderChatMessages();
+    });
   });
   document.querySelectorAll('[data-cancel-edit]').forEach(btn=>{
     btn.addEventListener('click', ()=>{ editingMessageId = null; renderChatMessages(); });
@@ -3282,6 +3316,24 @@ async function sendChatMessage(channelId, body, file){
   return true;
 }
 
+async function deleteMessage(messageId, attachmentPath, isSticker){
+  const { error } = await supabaseClient.from('messages').delete().eq('id', messageId);
+  if(error){ console.error('delete message failed', error); showToast('Could not delete message'); return false; }
+  // Only remove the actual file for a real attachment — a sticker's file is
+  // shared library content other people can still use, deleting the message
+  // reference to it must never delete the file itself.
+  if(attachmentPath && !isSticker){
+    try{ await supabaseClient.storage.from(CHAT_BUCKET).remove([attachmentPath]); }catch(e){}
+  }
+  const cache = messagesCache[currentChannelId];
+  if(cache){
+    const idx = cache.findIndex(m=>m.id===messageId);
+    if(idx !== -1) cache.splice(idx, 1);
+  }
+  delete messageReactions[messageId];
+  return true;
+}
+
 /* ================= Team Chat: voice channels (Agora) =================
    Audio routes through Agora's managed relay infrastructure rather than
    connecting browsers directly to each other — this is what fixed the
@@ -3537,12 +3589,17 @@ async function broadcastVoicePresenceState(){
 // and presence changes never actually change the channel list, so there's
 // nothing to re-fetch; re-fetching anyway was the whole reason this used to
 // feel laggy on every single toggle.
-async function refreshVoiceUI(){
+// Rebuilds the sidebar + main chat content from state that's already correct
+// locally — no network round-trip to reload channels, unlike a full
+// refresh(). Used for anything chat-related that never actually changes the
+// channel list itself: voice mute/deafen, reactions, sticker uploads, etc.
+async function refreshChatLight(){
   if(currentView !== 'chat') return;
   const main = document.getElementById('main');
   if(!main) return;
   await renderChat(main, true);
 }
+const refreshVoiceUI = refreshChatLight; // kept as an alias for existing voice call sites
 
 async function toggleDeafen(){
   voiceDeafened = !voiceDeafened;
@@ -3778,7 +3835,22 @@ function handleMessageUpdateGlobal(payload){
     const idx = cache.findIndex(m=>m.id===msg.id);
     if(idx !== -1) cache[idx] = msg;
   }
-  if(currentView === 'chat' && currentChannelId === msg.channel_id) requestRealtimeRefresh();
+  if(currentView === 'chat' && currentChannelId === msg.channel_id) refreshChatLight();
+}
+
+function handleMessageDeleteGlobal(payload){
+  // DELETE events only reliably include the primary key (id), not the other
+  // columns — so rather than assume we know which channel it belonged to,
+  // just check every channel we've got cached and remove it wherever found.
+  const deletedId = payload.old && payload.old.id;
+  if(!deletedId) return;
+  let affectedChannelId = null;
+  Object.keys(messagesCache).forEach(chId=>{
+    const idx = messagesCache[chId].findIndex(m=>m.id===deletedId);
+    if(idx !== -1){ messagesCache[chId].splice(idx, 1); affectedChannelId = chId; }
+  });
+  delete messageReactions[deletedId];
+  if(currentView === 'chat' && currentChannelId === affectedChannelId) refreshChatLight();
 }
 
 function handleReactionChange(payload){
@@ -3796,7 +3868,7 @@ function handleReactionChange(payload){
   // Only worth a redraw if that message is actually part of whatever's
   // currently on screen.
   const visible = (messagesCache[currentChannelId] || []).some(m=>m.id === messageId);
-  if(currentView === 'chat' && visible) requestRealtimeRefresh();
+  if(currentView === 'chat' && visible) refreshChatLight();
 }
 
 function setupRealtimeSubscriptions(){
@@ -3826,6 +3898,7 @@ function setupRealtimeSubscriptions(){
     .channel('messages_unread_tracking')
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, handleNewMessageForUnread)
     .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages' }, handleMessageUpdateGlobal)
+    .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'messages' }, handleMessageDeleteGlobal)
     .subscribe();
 
   // Reactions on any message you can currently see, and the shared sticker
@@ -3838,7 +3911,7 @@ function setupRealtimeSubscriptions(){
     .channel('stickers_changes')
     .on('postgres_changes', { event: '*', schema: 'public', table: 'stickers' }, async ()=>{
       await loadStickers();
-      if(currentView === 'chat' && composerPickerOpen === 'stickers') requestRealtimeRefresh();
+      if(currentView === 'chat' && composerPickerOpen === 'stickers') refreshChatLight();
     })
     .subscribe();
 
