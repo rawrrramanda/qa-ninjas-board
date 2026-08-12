@@ -543,7 +543,11 @@ async function getAvatarSignedUrl(path){
   if(!path) return null;
   if(avatarUrlCache[path]) return avatarUrlCache[path];
   try{
-    const { data, error } = await supabaseClient.storage.from(AVATAR_BUCKET).createSignedUrl(path, 3600);
+    // A week, not an hour — unlike screenshots, profile pictures aren't
+    // sensitive, so there's no real downside to a much longer-lived link,
+    // and it drastically cuts down on how often a cached link can go stale
+    // during a long session.
+    const { data, error } = await supabaseClient.storage.from(AVATAR_BUCKET).createSignedUrl(path, 604800);
     if(error){ console.error('avatar signed url failed', error); return null; }
     avatarUrlCache[path] = data?.signedUrl || null;
     return avatarUrlCache[path];
@@ -564,10 +568,38 @@ async function getAvatarUrlMapFor(managerIds){
 
 // Renders either the real picture or an initials circle, sized/styled by
 // whatever class the call site already uses for its avatar circles.
+// Self-healing for broken avatar images — a stale cached signed URL (or any
+// other one-off load failure) triggers exactly one retry with a freshly
+// generated URL. If even that fails (the file's genuinely gone), it falls
+// back to an initials circle instead of leaving a broken-image icon.
+async function handleAvatarLoadError(imgEl, managerId){
+  if(imgEl.dataset.retried){
+    replaceAvatarImgWithInitials(imgEl, managerId);
+    return;
+  }
+  imgEl.dataset.retried = 'true';
+  const m = managersList.find(mm=>mm.user_id===managerId);
+  if(!m || !m.avatar_path){ replaceAvatarImgWithInitials(imgEl, managerId); return; }
+  delete avatarUrlCache[m.avatar_path]; // the cached link is the one that just failed — drop it
+  const freshUrl = await getAvatarSignedUrl(m.avatar_path);
+  if(freshUrl){
+    imgEl.src = freshUrl;
+    imgEl.dataset.viewImg = freshUrl;
+  }else{
+    replaceAvatarImgWithInitials(imgEl, managerId);
+  }
+}
+function replaceAvatarImgWithInitials(imgEl, managerId){
+  const div = document.createElement('div');
+  div.className = imgEl.className;
+  div.textContent = chatInitial(managerName(managerId));
+  imgEl.replaceWith(div);
+}
+
 function avatarHtml(managerId, urlMap, sizeClass){
   const url = urlMap && urlMap[managerId];
   const name = managerName(managerId);
-  if(url) return `<img class="${sizeClass}" src="${url}" data-view-img="${url}" style="border-radius:50%;object-fit:cover;cursor:pointer;">`;
+  if(url) return `<img class="${sizeClass}" src="${url}" data-view-img="${url}" onerror="handleAvatarLoadError(this, '${managerId}')" style="border-radius:50%;object-fit:cover;cursor:pointer;">`;
   return `<div class="${sizeClass}">${escapeHtml(chatInitial(name))}</div>`;
 }
 
@@ -580,7 +612,7 @@ async function warmAvatarUrlCache(){
 function avatarHtmlSync(managerId, sizeClass){
   const m = managersList.find(mm=>mm.user_id===managerId);
   const url = m && m.avatar_path ? avatarUrlCache[m.avatar_path] : null;
-  if(url) return `<img class="${sizeClass}" src="${url}" data-view-img="${url}" style="border-radius:50%;object-fit:cover;cursor:pointer;">`;
+  if(url) return `<img class="${sizeClass}" src="${url}" data-view-img="${url}" onerror="handleAvatarLoadError(this, '${managerId}')" style="border-radius:50%;object-fit:cover;cursor:pointer;">`;
   return `<div class="${sizeClass}">${escapeHtml(chatInitial(managerName(managerId)))}</div>`;
 }
 
@@ -3183,9 +3215,11 @@ async function joinVoiceChannel(channelId){
   thisVoiceChannel
     .on('presence', { event: 'sync' }, ()=>{
       const state = thisVoiceChannel.presenceState();
+      console.log('[DIAGNOSTIC] raw presence state:', JSON.stringify(state));
       const occ = {};
       Object.keys(state).forEach(key=>{
         const meta = state[key][0];
+        console.log('[DIAGNOSTIC] parsed for', key, '-> meta:', JSON.stringify(meta));
         occ[key] = { name: meta.name, muted: !!meta.muted, deafened: !!meta.deafened };
       });
       voiceChannelOccupants[channelId] = occ;
@@ -3278,10 +3312,13 @@ async function toggleVoiceMute(){
 }
 
 async function broadcastVoicePresenceState(){
-  if(!voiceRealtimeChannel) return;
+  if(!voiceRealtimeChannel){ console.log('[DIAGNOSTIC] broadcast skipped — voiceRealtimeChannel is null'); return; }
   const me = currentManagerRecord();
+  const payload = { name: me ? me.name : 'Manager', muted: voiceMuted, deafened: voiceDeafened };
+  console.log('[DIAGNOSTIC] sending presence broadcast:', JSON.stringify(payload));
   try{
-    await voiceRealtimeChannel.track({ name: me ? me.name : 'Manager', muted: voiceMuted, deafened: voiceDeafened });
+    const result = await voiceRealtimeChannel.track(payload);
+    console.log('[DIAGNOSTIC] track() call result:', result);
   }catch(e){ console.error('presence broadcast failed', e); }
 }
 
