@@ -316,6 +316,21 @@
   .pinned-panel-item{display:flex;justify-content:space-between;gap:8px;padding:3px 0;}
   .chat-msg-edit-row{display:flex;gap:6px;margin-top:2px;}
   .chat-msg-action{font-size:10.5px;color:var(--ink-faint);cursor:pointer;background:none;border:none;padding:0;margin-right:8px;font-family:inherit;}
+  .reaction-pill{display:inline-flex;align-items:center;gap:3px;font-size:12px;padding:2px 8px;border-radius:12px;border:1px solid var(--border);background:#FAFAF8;cursor:pointer;font-family:inherit;}
+  .reaction-pill.mine{background:var(--accent-soft);border-color:var(--accent);}
+  .reaction-picker{position:absolute;bottom:100%;left:0;margin-bottom:4px;background:#fff;border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,0.15);padding:6px;display:flex;flex-wrap:wrap;gap:2px;width:200px;z-index:20;}
+  .reaction-picker button{font-size:17px;padding:4px;border:none;background:none;cursor:pointer;border-radius:6px;}
+  .reaction-picker button:hover{background:var(--accent-soft);}
+  .composer-picker{position:absolute;bottom:100%;right:0;margin-bottom:8px;width:280px;max-height:280px;background:#fff;border:1px solid var(--border);border-radius:12px;box-shadow:0 12px 32px rgba(0,0,0,0.18);overflow:hidden;display:flex;flex-direction:column;z-index:20;}
+  .composer-picker-tabs{display:flex;border-bottom:1px solid var(--border);}
+  .composer-picker-tabs button{flex:1;padding:9px;font-size:12.5px;font-weight:600;background:none;border:none;cursor:pointer;color:var(--ink-soft);font-family:inherit;}
+  .composer-picker-tabs button.active{color:var(--accent);border-bottom:2px solid var(--accent);}
+  .composer-picker-grid{display:flex;flex-wrap:wrap;gap:2px;padding:8px;overflow-y:auto;max-height:200px;}
+  .composer-picker-grid button{font-size:20px;padding:5px;border:none;background:none;cursor:pointer;border-radius:6px;width:36px;height:36px;}
+  .composer-picker-grid button:hover{background:var(--accent-soft);}
+  .composer-picker-grid.stickers button{width:56px;height:56px;padding:3px;}
+  .sticker-thumb{width:100%;height:100%;object-fit:contain;border-radius:6px;}
+  .chat-msg-attach img.sticker-img{max-width:110px;max-height:110px;}
   .chat-msg-action:hover{color:var(--accent);}
   .chat-new-channel{padding:10px 12px;border-top:1px solid var(--border);margin-top:auto;}
   .chat-main{flex:1;display:flex;flex-direction:column;min-width:0;}
@@ -634,6 +649,14 @@ function setLastRead(channelId, iso){
 
 let editingMessageId = null;     // which message (if any) is currently being edited inline
 let chatRenderTarget = 'chatMain'; // which element renderChatMessages targets — swaps when embedded in a voice room
+
+// Stickers + reactions
+let stickers = [];               // shared sticker library, loaded once and kept live
+let messageReactions = {};       // messageId -> [{id, user_id, emoji}]
+let composerPickerOpen = null;   // null | 'emoji' | 'stickers' — which tab of the composer picker is open
+let reactionPickerForMessage = null; // messageId whose quick-reaction picker is currently open
+
+const EMOJI_SET = ['😀','😂','😅','😍','🥰','😎','🤔','😴','😭','😡','🥳','😮','👍','👎','👏','🙌','🙏','💪','🤝','👋','❤️','🔥','🎉','✨','⭐','💯','✅','❌','⚠️','💡','🚀','👀','🙈','🤷','😬','🤦','😇','🥲','😤','🫡'];
 
 // Voice channel state
 let voiceChannelId = null;       // which voice channel (if any) we're currently in
@@ -2118,6 +2141,10 @@ async function renderChatMessages(isInitial){
   const msgs = messagesCache[currentChannelId] || [];
   const signedUrls = await getChatSignedUrls(msgs.map(m=>m.attachment_path));
   const avatarUrls = await getAvatarUrlMapFor(msgs.map(m=>m.user_id));
+  const unloadedReactionIds = msgs.map(m=>m.id).filter(id => messageReactions[id] === undefined);
+  if(unloadedReactionIds.length) await loadReactionsFor(unloadedReactionIds);
+  if(composerPickerOpen === 'stickers' && stickers.length === 0) await loadStickers();
+  const stickerUrls = composerPickerOpen === 'stickers' ? await getChatSignedUrls(stickers.map(s=>s.storage_path)) : {};
   const pinned = msgs.filter(m=>m.pinned);
   const headerName = channel.type === 'dm' ? dmDisplayName(channel) : (channel.type === 'group' ? groupDisplayName(channel) : channel.name);
   const headerPrefix = (channel.type === 'dm' || channel.type === 'group') ? '' : '#&nbsp;';
@@ -2138,6 +2165,7 @@ async function renderChatMessages(isInitial){
     <div class="chat-messages" id="chatMessagesList">
       ${msgs.length === 0 ? `<div class="hint" style="padding:20px;">No messages yet — say hello.</div>` : msgs.map(m=>{
         const name = managerName(m.user_id);
+        const isSticker = m.attachment_type === 'image/sticker';
         const isImage = m.attachment_type && m.attachment_type.startsWith('image/');
         const url = signedUrls[m.attachment_path];
         const isMine = m.user_id === currentManagerId;
@@ -2159,23 +2187,65 @@ async function renderChatMessages(isInitial){
             ${m.attachment_path ? `
               <div class="chat-msg-attach">
                 ${isImage
-                  ? (url ? `<img src="${url}" data-view-img="${url}">` : `<div class="hint">Image unavailable</div>`)
+                  ? (url ? `<img src="${url}" data-view-img="${url}" class="${isSticker?'sticker-img':''}">` : `<div class="hint">Image unavailable</div>`)
                   : `<a class="chat-msg-file" href="${url||'#'}" target="_blank" rel="noopener">&#128206; ${escapeHtml(m.attachment_name||'file')}</a>`}
               </div>` : ''}
+            ${(()=>{
+              const reactions = messageReactions[m.id] || [];
+              if(reactions.length === 0) return '';
+              const byEmoji = {};
+              reactions.forEach(r=>{ (byEmoji[r.emoji] = byEmoji[r.emoji] || []).push(r); });
+              return `<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px;">
+                ${Object.entries(byEmoji).map(([emoji, list])=>{
+                  const iReacted = list.some(r=>r.user_id === currentManagerId);
+                  return `<button class="reaction-pill ${iReacted?'mine':''}" data-toggle-reaction="${m.id}" data-emoji="${emoji}">${emoji} ${list.length}</button>`;
+                }).join('')}
+              </div>`;
+            })()}
             ${!isEditing ? `
-              <div style="margin-top:3px;">
+              <div style="margin-top:3px;position:relative;">
                 ${isMine ? `<button class="chat-msg-action" data-edit-msg="${m.id}">Edit</button>` : ''}
                 <button class="chat-msg-action" data-toggle-pin="${m.id}" data-currently-pinned="${!!m.pinned}">${m.pinned ? 'Unpin' : 'Pin'}</button>
+                <button class="chat-msg-action" data-open-reaction-picker="${m.id}">&#128512; React</button>
+                ${reactionPickerForMessage === m.id ? `
+                  <div class="reaction-picker">
+                    ${EMOJI_SET.slice(0,20).map(e=>`<button data-toggle-reaction="${m.id}" data-emoji="${e}">${e}</button>`).join('')}
+                  </div>
+                ` : ''}
               </div>
             ` : ''}
           </div>
         </div>`;
       }).join('')}
     </div>
-    <div class="chat-composer">
+    <div class="chat-composer" style="position:relative;">
       <label class="chat-attach-btn" title="Attach a file or image">&#128206;<input type="file" id="chatFileInput" style="display:none;"></label>
+      <button type="button" class="chat-attach-btn" id="composerPickerBtn" title="Emoji &amp; stickers">&#128512;</button>
       <textarea id="chatBodyInput" placeholder="Message ${(channel.type==='dm'||channel.type==='group') ? escapeHtml(headerName) : '#'+escapeHtml(channel.name)}" rows="1"></textarea>
       <button class="btn btn-primary" id="chatSendBtn">Send</button>
+      ${composerPickerOpen ? `
+        <div class="composer-picker">
+          <div class="composer-picker-tabs">
+            <button class="${composerPickerOpen==='emoji'?'active':''}" data-picker-tab="emoji">Emoji</button>
+            <button class="${composerPickerOpen==='stickers'?'active':''}" data-picker-tab="stickers">Stickers</button>
+          </div>
+          ${composerPickerOpen === 'emoji' ? `
+            <div class="composer-picker-grid">
+              ${EMOJI_SET.map(e=>`<button data-insert-emoji="${e}">${e}</button>`).join('')}
+            </div>
+          ` : `
+            <div class="composer-picker-grid stickers">
+              ${stickers.length === 0 ? `<div class="hint" style="padding:10px;">No stickers yet — upload one below.</div>` : ''}
+              ${stickers.map(s=>`<button data-send-sticker="${s.id}" title="${escapeAttr(s.name||'')}">${stickerUrls[s.storage_path] ? `<img src="${stickerUrls[s.storage_path]}" class="sticker-thumb">` : ''}</button>`).join('')}
+            </div>
+            <div style="padding:8px 10px;border-top:1px solid var(--border);">
+              <label class="btn btn-sm" style="width:100%;justify-content:center;cursor:pointer;">+ Upload sticker
+                <input type="file" id="stickerUploadInput" accept="image/*" style="display:none;">
+              </label>
+            </div>
+          `}
+        </div>
+      ` : ''}
     </div>
   `;
 
@@ -2264,6 +2334,76 @@ async function renderChatMessages(isInitial){
   document.getElementById('chatBodyInput').addEventListener('keydown', e=>{
     if(e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); send(); }
   });
+
+  // Reactions: the small "React" trigger opens a quick-pick popup; clicking
+  // a reaction pill (whether it's the trigger popup or an existing pill on
+  // the message) toggles your own reaction for that emoji.
+  document.querySelectorAll('[data-open-reaction-picker]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const id = btn.dataset.openReactionPicker;
+      reactionPickerForMessage = reactionPickerForMessage === id ? null : id;
+      renderChatMessages();
+    });
+  });
+  document.querySelectorAll('[data-toggle-reaction]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      await toggleReaction(btn.dataset.toggleReaction, btn.dataset.emoji);
+      renderChatMessages();
+    });
+  });
+
+  // Composer emoji/sticker picker
+  const pickerBtn = document.getElementById('composerPickerBtn');
+  if(pickerBtn) pickerBtn.addEventListener('click', ()=>{
+    composerPickerOpen = composerPickerOpen ? null : 'emoji';
+    renderChatMessages();
+  });
+  document.querySelectorAll('[data-picker-tab]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      composerPickerOpen = btn.dataset.pickerTab;
+      if(composerPickerOpen === 'stickers' && stickers.length === 0) await loadStickers();
+      renderChatMessages();
+    });
+  });
+  document.querySelectorAll('[data-insert-emoji]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const input = document.getElementById('chatBodyInput');
+      const emoji = btn.dataset.insertEmoji;
+      const start = input.selectionStart || input.value.length;
+      const end = input.selectionEnd || input.value.length;
+      input.value = input.value.slice(0, start) + emoji + input.value.slice(end);
+      input.focus();
+      input.selectionStart = input.selectionEnd = start + emoji.length;
+    });
+  });
+  document.querySelectorAll('[data-send-sticker]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const sticker = stickers.find(s=>s.id === btn.dataset.sendSticker);
+      if(!sticker) return;
+      const ok = await sendSticker(sticker);
+      if(ok) renderChatMessages();
+    });
+  });
+  const stickerUploadInput = document.getElementById('stickerUploadInput');
+  if(stickerUploadInput) stickerUploadInput.addEventListener('change', async ()=>{
+    const file = stickerUploadInput.files[0];
+    if(!file) return;
+    showToast('Uploading sticker…');
+    const ok = await uploadSticker(file);
+    if(ok){ showToast('Sticker added'); renderChatMessages(); }
+  });
+
+  // Clicking anywhere outside an open picker closes it — standard popup behavior.
+  document.addEventListener('click', function closePickers(e){
+    if(composerPickerOpen && !e.target.closest('.composer-picker') && !e.target.closest('#composerPickerBtn')){
+      composerPickerOpen = null;
+      renderChatMessages();
+    }
+    if(reactionPickerForMessage && !e.target.closest('.reaction-picker') && !e.target.closest('[data-open-reaction-picker]')){
+      reactionPickerForMessage = null;
+      renderChatMessages();
+    }
+  }, { once: true });
 }
 
 async function renderVoiceRoom(){
@@ -3014,8 +3154,74 @@ async function createGroupChat(name, memberIds){
   refresh();
 }
 
-/* ================= Team Chat: text messages ================= */
-let chatMsgRTChannel = null;
+/* ---- Stickers: shared library, reuses the chat-attachments bucket ---- */
+async function loadStickers(){
+  const { data, error } = await supabaseClient.from('stickers').select('*').order('created_at', { ascending:false });
+  stickers = error ? [] : (data || []);
+}
+
+async function uploadSticker(file){
+  try{
+    let blob = file;
+    if(file.type.startsWith('image/')){ blob = await compressForStorage(file); }
+    if(blob.size > 5*1024*1024){ showToast('Sticker too large (5MB max)'); return false; }
+    const ext = file.name.includes('.') ? '.' + file.name.split('.').pop() : '.png';
+    const path = `stickers/${uid()}${ext}`;
+    const { error: upErr } = await supabaseClient.storage.from(CHAT_BUCKET).upload(path, blob, { contentType: blob.type || file.type, upsert:false });
+    if(upErr){ console.error('sticker upload failed', upErr); showToast('Could not upload sticker'); return false; }
+    const name = file.name.replace(/\.[^.]+$/, '').slice(0, 40);
+    const { data, error: dbErr } = await supabaseClient.from('stickers').insert({ name, storage_path: path, uploaded_by: currentManagerId }).select().single();
+    if(dbErr){ console.error('sticker save failed', dbErr); showToast('Could not save sticker'); return false; }
+    stickers.unshift(data);
+    return true;
+  }catch(e){ console.error('sticker upload failed', e); showToast('Could not upload sticker'); return false; }
+}
+
+async function deleteSticker(stickerId, storagePath){
+  try{ await supabaseClient.storage.from(CHAT_BUCKET).remove([storagePath]); }catch(e){}
+  const { error } = await supabaseClient.from('stickers').delete().eq('id', stickerId);
+  if(error){ console.error('sticker delete failed', error); showToast('Could not remove sticker'); return false; }
+  stickers = stickers.filter(s=>s.id !== stickerId);
+  return true;
+}
+
+async function sendSticker(sticker){
+  const { error } = await supabaseClient.from('messages').insert({
+    channel_id: currentChannelId, user_id: currentManagerId, body: '',
+    attachment_path: sticker.storage_path, attachment_name: sticker.name || 'sticker', attachment_type: 'image/sticker'
+  });
+  if(error){ console.error('send sticker failed', error); showToast('Could not send sticker'); return false; }
+  composerPickerOpen = null;
+  return true;
+}
+
+/* ---- Reactions ---- */
+async function loadReactionsFor(messageIds){
+  if(messageIds.length === 0) return;
+  const { data, error } = await supabaseClient.from('message_reactions').select('*').in('message_id', messageIds);
+  if(error){ console.error('load reactions failed', error); return; }
+  messageIds.forEach(id => { messageReactions[id] = []; });
+  (data || []).forEach(r => {
+    if(!messageReactions[r.message_id]) messageReactions[r.message_id] = [];
+    messageReactions[r.message_id].push(r);
+  });
+}
+
+async function toggleReaction(messageId, emoji){
+  const existing = (messageReactions[messageId] || []).find(r => r.user_id === currentManagerId && r.emoji === emoji);
+  if(existing){
+    const { error } = await supabaseClient.from('message_reactions').delete().eq('id', existing.id);
+    if(error){ console.error('remove reaction failed', error); return; }
+    messageReactions[messageId] = messageReactions[messageId].filter(r => r.id !== existing.id);
+  }else{
+    const { data, error } = await supabaseClient.from('message_reactions').insert({ message_id: messageId, user_id: currentManagerId, emoji }).select().single();
+    if(error){ console.error('add reaction failed', error); return; }
+    if(!messageReactions[messageId]) messageReactions[messageId] = [];
+    messageReactions[messageId].push(data);
+  }
+  reactionPickerForMessage = null;
+}
+
 async function loadMessages(channelId){
   const { data, error } = await supabaseClient.from('messages').select('*').eq('channel_id', channelId).order('created_at');
   messagesCache[channelId] = error ? [] : (data || []);
@@ -3575,6 +3781,24 @@ function handleMessageUpdateGlobal(payload){
   if(currentView === 'chat' && currentChannelId === msg.channel_id) requestRealtimeRefresh();
 }
 
+function handleReactionChange(payload){
+  const row = payload.new || payload.old;
+  if(!row) return;
+  const messageId = row.message_id;
+  // Only bother touching the local cache if we've actually loaded reactions
+  // for this message at all — otherwise there's nothing to keep in sync yet.
+  if(messageReactions[messageId] === undefined) return;
+  if(payload.eventType === 'DELETE'){
+    messageReactions[messageId] = messageReactions[messageId].filter(r=>r.id !== row.id);
+  }else if(payload.eventType === 'INSERT'){
+    if(!messageReactions[messageId].some(r=>r.id === row.id)) messageReactions[messageId].push(row);
+  }
+  // Only worth a redraw if that message is actually part of whatever's
+  // currently on screen.
+  const visible = (messagesCache[currentChannelId] || []).some(m=>m.id === messageId);
+  if(currentView === 'chat' && visible) requestRealtimeRefresh();
+}
+
 function setupRealtimeSubscriptions(){
   if(realtimeChannelsActive) return;
   realtimeChannelsActive = true;
@@ -3602,6 +3826,20 @@ function setupRealtimeSubscriptions(){
     .channel('messages_unread_tracking')
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, handleNewMessageForUnread)
     .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages' }, handleMessageUpdateGlobal)
+    .subscribe();
+
+  // Reactions on any message you can currently see, and the shared sticker
+  // library — both need to stay live across everyone using Team Chat.
+  supabaseClient
+    .channel('reactions_changes')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'message_reactions' }, handleReactionChange)
+    .subscribe();
+  supabaseClient
+    .channel('stickers_changes')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'stickers' }, async ()=>{
+      await loadStickers();
+      if(currentView === 'chat' && composerPickerOpen === 'stickers') requestRealtimeRefresh();
+    })
     .subscribe();
 
   // Online status — tracked the moment you're signed in, on any tab, not
