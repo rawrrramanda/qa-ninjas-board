@@ -325,6 +325,10 @@
   .composer-picker-tabs{display:flex;border-bottom:1px solid var(--border);}
   .composer-picker-tabs button{flex:1;padding:9px;font-size:12.5px;font-weight:600;background:none;border:none;cursor:pointer;color:var(--ink-soft);font-family:inherit;}
   .composer-picker-tabs button.active{color:var(--accent);border-bottom:2px solid var(--accent);}
+  .coaching-dropdown{position:fixed;width:360px;max-width:90vw;max-height:400px;overflow-y:auto;background:#fff;border:1px solid var(--border);border-radius:10px;box-shadow:0 12px 32px rgba(0,0,0,0.15);padding:10px 12px;z-index:200;}
+  .coaching-dropdown .flag-group-title{font-size:11px;text-transform:uppercase;letter-spacing:0.03em;color:var(--ink-faint);margin:10px 0 4px;}
+  .coaching-dropdown .flag-group-title:first-child{margin-top:0;}
+  .coaching-dropdown label{display:flex;align-items:center;gap:7px;font-size:13px;padding:4px 0;cursor:pointer;}
   .composer-picker-grid{display:flex;flex-wrap:wrap;gap:2px;padding:8px;overflow-y:auto;max-height:200px;}
   .composer-picker-grid button{font-size:20px;padding:5px;border:none;background:none;cursor:pointer;border-radius:6px;width:36px;height:36px;}
   .composer-picker-grid button:hover{background:var(--accent-soft);}
@@ -507,6 +511,8 @@ let loading = true;
 let currentManagerId = null;     // which manager profile is logged in
 let viewFilter = 'mine';         // 'mine' | 'all' — which interpreters to show
 let perfInterpreterFilter = '';  // '' = all interpreters, else a specific interpreter id
+let coachingPickedItems = [];    // [{category, item}] currently selected in the coaching point picker, kept across re-renders until submitted
+let coachingPickerOpen = false;  // whether the coaching point dropdown is currently open
 let todaySearchQuery = '';       // live search box on Today's Log
 
 // Team Chat state
@@ -866,22 +872,27 @@ function parseCsvDate(s){
 }
 
 // Maps the QA export's "Owner Name" column to this board's manager accounts.
-const OWNER_NAME_MAP = {
-  'Amanda Liew VH': 'Amanda',
-  'Henry Zan VH': 'Henry',
-  'Alshiffa Elmozain VH': 'Alshiffa',
-  'Ahmed Helmy VH': 'Helmy',
-  'Nowrus Emad VH': 'Nowrus',
-};
 // Collapses any whitespace variant (double spaces, non-breaking spaces, etc.)
 // and case differences so CSV exports with slightly inconsistent formatting
 // still match correctly.
 function normalizeName(s){
   return (s||'').replace(/\s+/g, ' ').trim().toLowerCase();
 }
-const OWNER_NAME_MAP_NORMALIZED = Object.fromEntries(
-  Object.entries(OWNER_NAME_MAP).map(([k,v]) => [normalizeName(k), v])
-);
+
+// Matches a CSV "Owner Name" cell (e.g. "Amanda Liew VH", or "Ahmed Helmy",
+// or whatever suffix/order a future export uses) against an actual current
+// manager account, by checking whether any of that manager's name appears
+// as a whole word in the CSV text. This deliberately avoids a hardcoded
+// per-person mapping — a previous exact-string version broke for every
+// manager at once the moment the CSV export dropped its "VH" suffix, and
+// would need to be hand-updated again for the next such change. Matching by
+// word means it keeps working through export format changes, and needs no
+// updates when a new manager joins.
+function findManagerFromOwnerName(ownerNameRaw){
+  const words = normalizeName(ownerNameRaw).split(' ').filter(Boolean);
+  if(words.length === 0) return null;
+  return managersList.find(m => words.includes(normalizeName(m.name))) || null;
+}
 
 // Maps each CSV violation column to this app's category/item labels. Language
 // Proficiency Score and Accuracy & Completeness Notes are intentionally left
@@ -969,7 +980,7 @@ async function processImportedCsv(csvText){
         let severity = csvSeverity(status);
         const def = catalogItem(m.category, m.item);
         if(!def || !def.severity) severity = (def && def.autoDnme) ? 'DNME' : ''; // exempt items: auto-DNME, ignoring whatever the CSV says
-        items.push({ category: m.category, item: m.item, severity });
+        items.push({ category: m.category, item: m.item, severity, pointType: 'violation' });
       }
     });
     if(items.length === 0){ summary.skippedClean++; continue; }
@@ -977,8 +988,7 @@ async function processImportedCsv(csvText){
     const note = CSV_NOTE_COLUMNS.map(col => row[idx(col)]).filter(v=>v && v.trim()).map(stripHtmlNote).join('\n\n');
 
     const interp = activeRoster.find(p=> normalizeName(p.name) === normalizeName(agentName));
-    const mappedManagerName = OWNER_NAME_MAP_NORMALIZED[normalizeName(ownerNameRaw)] || null;
-    const managerRec = mappedManagerName ? managersList.find(m=> normalizeName(m.name) === normalizeName(mappedManagerName)) : null;
+    const managerRec = findManagerFromOwnerName(ownerNameRaw);
 
     if(!interp){
       queueReviewItem({ type:'unmatched-interpreter', qar, date, agentName, ownerNameRaw, items, note });
@@ -995,10 +1005,11 @@ async function processImportedCsv(csvText){
     const existing = (violationsCache[interp.id]||[]).find(v=> v.qar && v.qar.trim() === qar);
 
     if(existing){
-      if(itemSetsMatch(existing.items||[], items)){
+      const existingViolationItems = (existing.items||[]).filter(it=>(it.pointType||'violation')==='violation');
+      if(itemSetsMatch(existingViolationItems, items)){
         summary.alreadyMatched++;
       }else{
-        queueReviewItem({ type:'mismatch', qar, date, agentName, ownerNameRaw, interpreterId: interp.id, items, note, existingItems: existing.items||[] });
+        queueReviewItem({ type:'mismatch', qar, date, agentName, ownerNameRaw, interpreterId: interp.id, items, note, existingItems: existingViolationItems });
         summary.mismatched++;
       }
       continue;
@@ -1911,7 +1922,7 @@ async function renderPerformanceOverviewPanel(ids){
     const monthRecords = (violationsCache[id]||[]).filter(v=>v.date.slice(0,7)===currentMonth);
     let count = 0;
     monthRecords.forEach(v=>{
-      (v.items||[]).forEach(it=>{
+      (v.items||[]).filter(it=>(it.pointType||'violation')==='violation').forEach(it=>{
         totalFlags++;
         count++;
         if(it.severity==='PME') pmeCount++;
@@ -2597,6 +2608,91 @@ function wireCatItemSev(catSel, itemSel, sevSel){
   refreshSeverity();
 }
 
+// Builds/toggles the Coaching Point checkbox-dropdown, independent of the
+// rest of the form — opening it, checking a box, or closing it never
+// re-renders the violation checklist or anything else on the page.
+let coachingPickerScrollHandler = null;
+
+function updateCoachingPicker(){
+  const panel = document.getElementById('coachingPickerPanel');
+  const btn = document.getElementById('coachingPickerBtn');
+  if(!panel) return;
+
+  // Always clean up any previous scroll listener first — whether we're
+  // closing the picker or about to open a fresh one, the old listener must
+  // not keep running.
+  if(coachingPickerScrollHandler){
+    window.removeEventListener('scroll', coachingPickerScrollHandler, true);
+    coachingPickerScrollHandler = null;
+  }
+
+  if(!coachingPickerOpen){ panel.innerHTML = ''; return; }
+
+  // Fixed positioning escapes the parent panel's overflow:hidden clipping,
+  // but a fixed element stays glued to the viewport — so if the page
+  // scrolls after it opens, it visibly detaches from the button that
+  // spawned it. Recalculating on every scroll event keeps it correctly
+  // anchored to the button no matter what.
+  const reposition = ()=>{
+    const dropdown = document.querySelector('.coaching-dropdown');
+    if(!dropdown || !btn) return;
+    const rect = btn.getBoundingClientRect();
+    const dropdownWidth = 360;
+    const top = Math.min(rect.bottom + 6, window.innerHeight - 100);
+    const left = Math.max(8, Math.min(rect.left, window.innerWidth - dropdownWidth - 16));
+    dropdown.style.top = top + 'px';
+    dropdown.style.left = left + 'px';
+  };
+
+  panel.innerHTML = `
+    <div class="coaching-dropdown">
+      ${VIOLATION_CATALOG.map(cat=>`
+        <div class="flag-group-title">${escapeHtml(cat.category)}</div>
+        ${cat.items.map(item=>{
+          const checked = coachingPickedItems.some(x=>x.category===cat.category && x.item===item.label);
+          return `<label>
+            <input type="checkbox" data-coaching-pick data-category="${escapeAttr(cat.category)}" data-item="${escapeAttr(item.label)}" ${checked?'checked':''}>
+            ${escapeHtml(item.label)}
+          </label>`;
+        }).join('')}
+      `).join('')}
+    </div>
+  `;
+  reposition();
+  coachingPickerScrollHandler = reposition;
+  window.addEventListener('scroll', coachingPickerScrollHandler, true);
+
+  panel.querySelectorAll('[data-coaching-pick]').forEach(cb=>{
+    cb.addEventListener('change', ()=>{
+      const category = cb.dataset.category, item = cb.dataset.item;
+      if(cb.checked){
+        if(!coachingPickedItems.some(x=>x.category===category && x.item===item)){
+          coachingPickedItems.push({ category, item });
+        }
+      }else{
+        coachingPickedItems = coachingPickedItems.filter(x=>!(x.category===category && x.item===item));
+      }
+      updateCoachingSummary();
+    });
+  });
+
+  // Clicking anywhere outside the dropdown closes it, same pattern as the chat pickers.
+  document.addEventListener('click', function closeCoachingPicker(e){
+    if(coachingPickerOpen && !e.target.closest('.coaching-picker-wrap')){
+      coachingPickerOpen = false;
+      updateCoachingPicker();
+    }
+  }, { once: true });
+}
+
+function updateCoachingSummary(){
+  const el = document.getElementById('coachingSelectedSummary');
+  if(!el) return;
+  el.textContent = coachingPickedItems.length
+    ? `${coachingPickedItems.length} selected: ${coachingPickedItems.map(x=>x.item).join(', ')}`
+    : '';
+}
+
 async function renderPerformance(main){
   const allActive = roster.filter(p=>p.active !== false);
   const scope = viewFilter === 'mine' ? allActive.filter(p=>p.managerId === currentManagerId) : allActive;
@@ -2661,7 +2757,17 @@ async function renderPerformance(main){
             </div>
           `).join('')}
         </div>
-        <button class="btn btn-primary" id="addViolation" style="margin-top:14px;">Flag selected violation(s)</button>
+
+        <div class="coaching-picker-wrap" style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border);position:relative;">
+          <div style="font-family:'Space Grotesk';font-size:14px;font-weight:600;margin-bottom:4px;">Coaching Point</div>
+          <div class="hint" style="margin-bottom:10px;">Developmental feedback for this same QAR — any criteria can be picked here, including ones that are always a violation when flagged above.</div>
+          <button type="button" class="btn btn-sm" id="coachingPickerBtn">+ Add coaching point(s)</button>
+          <span id="coachingSelectedSummary" style="margin-left:10px;font-size:12.5px;color:var(--ink-soft);"></span>
+          <div id="coachingPickerPanel"></div>
+          <textarea id="vCoachNote" placeholder="Coaching note — what to work on…" style="width:100%;margin-top:12px;box-sizing:border-box;"></textarea>
+        </div>
+
+        <button class="btn btn-primary" id="addViolation" style="margin-top:14px;">Log selected item(s)</button>
       </div>
       `}
     </div>
@@ -2705,11 +2811,22 @@ async function renderPerformance(main){
       }
     });
 
+    const coachingBtn = document.getElementById('coachingPickerBtn');
+    if(coachingBtn){
+      coachingBtn.addEventListener('click', ()=>{
+        coachingPickerOpen = !coachingPickerOpen;
+        updateCoachingPicker();
+      });
+      updateCoachingSummary();
+      if(coachingPickerOpen) updateCoachingPicker();
+    }
+
     document.getElementById('addViolation').addEventListener('click', async ()=>{
       const interpId = document.getElementById('vInterp').value;
       const date = document.getElementById('vDate').value || todayStr();
       const qar = document.getElementById('vQar').value.trim();
       const note = document.getElementById('vNote').value.trim();
+      const coachingNote = document.getElementById('vCoachNote').value.trim();
 
       const toFlag = [];
       let missingSeverity = false;
@@ -2725,22 +2842,39 @@ async function renderPerformance(main){
             }else if(item.autoDnme){
               severity = 'DNME';
             }
-            toFlag.push({ category: cat.category, item: item.label, severity });
+            toFlag.push({ category: cat.category, item: item.label, severity, pointType: 'violation' });
           }
         });
       });
 
-      if(toFlag.length === 0){ showToast('Check at least one violation to flag'); return; }
+      // Coaching points picked from the separate dropdown — same QAR, same
+      // submission, just tagged differently so they never count as violations.
+      coachingPickedItems.forEach(c=>{
+        toFlag.push({ category: c.category, item: c.item, severity: '', pointType: 'coaching' });
+      });
+
+      if(toFlag.length === 0){ showToast('Check at least one item to log'); return; }
       if(missingSeverity){ showToast('Pick a severity (PME or DNME) for each checked item that needs one'); return; }
 
       await ensureViolationsLoaded(interpId);
       violationsCache[interpId].push({
-        id: uid(), date, qar, note,
-        items: toFlag, // [{category, item, severity}] — one QAR, one log entry, however many violations
+        id: uid(), date, qar, note, coachingNote,
+        items: toFlag, // [{category, item, severity, pointType}] — one QAR, one log entry, can mix violations and coaching points
         loggedBy: currentManagerId, createdAt: new Date().toISOString()
       });
       const ok = await saveViolations(interpId);
-      if(ok){ showToast(`Flagged ${toFlag.length} violation${toFlag.length>1?'s':''}`); refresh(); }
+      if(ok){
+        const violationCount = toFlag.filter(f=>f.pointType==='violation').length;
+        const coachingCount = toFlag.filter(f=>f.pointType==='coaching').length;
+        const parts = [];
+        if(violationCount) parts.push(`${violationCount} violation${violationCount>1?'s':''}`);
+        if(coachingCount) parts.push(`${coachingCount} coaching point${coachingCount>1?'s':''}`);
+        showToast(`Logged: ${parts.join(', ')}`);
+        coachingPickedItems = [];
+        coachingPickerOpen = false;
+        updateCoachingPicker(); // closes the panel and removes its scroll listener before the full refresh below
+        refresh();
+      }
     });
   }
 
@@ -2754,23 +2888,34 @@ function renderPerformanceBody(scope){
   const filteredScope = perfInterpreterFilter ? scope.filter(p=>p.id===perfInterpreterFilter) : scope;
 
   // Monthly + all-time counts per interpreter, broken down by the specific
-  // violation item flagged (not just its broad category) — e.g. "Transparency ×1".
-  // Counts individual violations (items), not QAR submissions (records), since
-  // one submission can hold several.
+  // item flagged (not just its broad category) — e.g. "Transparency ×1".
+  // Counts individual items, not QAR submissions (records), since one
+  // submission can hold several — and separates violations from coaching
+  // points, since they're logged together but tracked separately. Existing
+  // records predating this feature have no pointType at all, treated as a
+  // violation (the only kind that existed before).
   const stats = {};
   filteredScope.forEach(p=>{
     const all = violationsCache[p.id] || [];
     const monthRecords = all.filter(v=>v.date.slice(0,7) === currentMonth);
-    const byItem = {};
-    let monthItemCount = 0, allItemCount = 0;
-    all.forEach(v=> allItemCount += (v.items||[]).length);
+    const byItemViolation = {};
+    const byItemCoaching = {};
+    let monthItemCount = 0, allItemCount = 0, monthCoachCount = 0, allCoachCount = 0;
+    all.forEach(v=> (v.items||[]).forEach(it=>{
+      if((it.pointType||'violation') === 'coaching') allCoachCount++; else allItemCount++;
+    }));
     monthRecords.forEach(v=>{
       (v.items||[]).forEach(it=>{
-        byItem[it.item] = (byItem[it.item]||0) + 1;
-        monthItemCount++;
+        if((it.pointType||'violation') === 'coaching'){
+          byItemCoaching[it.item] = (byItemCoaching[it.item]||0) + 1;
+          monthCoachCount++;
+        }else{
+          byItemViolation[it.item] = (byItemViolation[it.item]||0) + 1;
+          monthItemCount++;
+        }
       });
     });
-    stats[p.id] = { total: allItemCount, thisMonth: monthItemCount, byItem };
+    stats[p.id] = { total: allItemCount, thisMonth: monthItemCount, coachTotal: allCoachCount, coachThisMonth: monthCoachCount, byItemViolation, byItemCoaching };
   });
 
   // Flat list of this month's QAR records across the filtered scope, most recent first.
@@ -2787,30 +2932,37 @@ function renderPerformanceBody(scope){
     return;
   }
 
-  const monthLogTotalItems = monthLog.reduce((sum,v)=> sum + (v.items||[]).length, 0);
+  const monthLogTotalItems = monthLog.reduce((sum,v)=> sum + (v.items||[]).filter(it=>(it.pointType||'violation')==='violation').length, 0);
+  const monthLogTotalCoaching = monthLog.reduce((sum,v)=> sum + (v.items||[]).filter(it=>it.pointType==='coaching').length, 0);
 
   body.innerHTML = `
     <div class="stat-row" style="margin-bottom:20px;">
       <div class="stat-chip"><div class="n">${monthLog.length}</div><div class="l">Logs this month</div></div>
       <div class="stat-chip"><div class="n">${monthLogTotalItems}</div><div class="l">Violations flagged</div></div>
+      <div class="stat-chip"><div class="n">${monthLogTotalCoaching}</div><div class="l">Coaching points</div></div>
     </div>
 
     <div class="panel" style="margin-bottom:22px;">
       <div class="summary-scroll">
       <table class="month-summary violation-summary">
         <thead><tr>
-          <th style="width:150px;">Interpreter</th><th style="width:90px;">This month</th><th style="width:90px;">All-time</th>
-          <th>Violations flagged this month</th>
+          <th style="width:150px;">Interpreter</th><th style="width:90px;">Violations (mo.)</th><th style="width:90px;">Violations (all)</th><th style="width:90px;">Coaching (mo.)</th>
+          <th>Flagged this month</th>
         </tr></thead>
         <tbody>
           ${filteredScope.map(p=>{
-            const items = Object.entries(stats[p.id].byItem).sort((a,b)=>b[1]-a[1]);
+            const violationItems = Object.entries(stats[p.id].byItemViolation).sort((a,b)=>b[1]-a[1]);
+            const coachingItems = Object.entries(stats[p.id].byItemCoaching).sort((a,b)=>b[1]-a[1]);
             return `
             <tr>
               <td style="font-family:'Inter';font-size:13.5px;">${escapeHtml(p.name)}</td>
               <td>${stats[p.id].thisMonth}</td>
               <td>${stats[p.id].total}</td>
-              <td>${items.length ? items.map(([item,count])=>`<span class="item-pill">${escapeHtml(item)} ×${count}</span>`).join(' ') : '<span style="color:var(--ink-faint);">—</span>'}</td>
+              <td>${stats[p.id].coachThisMonth}</td>
+              <td>
+                <div style="margin-bottom:5px;"><strong style="font-size:11px;color:var(--ink-soft);">Violation tags:</strong> ${violationItems.length ? violationItems.map(([item,count])=>`<span class="item-pill">${escapeHtml(item)} ×${count}</span>`).join(' ') : '<span style="color:var(--ink-faint);">—</span>'}</div>
+                <div><strong style="font-size:11px;color:var(--ink-soft);">Coaching Point tags:</strong> ${coachingItems.length ? coachingItems.map(([item,count])=>`<span class="item-pill" style="background:var(--accent-soft);color:var(--accent-dark);">${escapeHtml(item)} ×${count}</span>`).join(' ') : '<span style="color:var(--ink-faint);">—</span>'}</div>
+              </td>
             </tr>
           `;}).join('')}
         </tbody>
@@ -2830,8 +2982,8 @@ function renderPerformanceBody(scope){
           <th style="width:110px">Date</th>
           <th style="width:130px">QAR ID</th>
           <th style="width:150px">Interpreter</th>
-          <th style="width:340px">Violation(s)</th>
-          <th>Note</th>
+          <th style="width:340px">Item(s) — violation or coaching</th>
+          <th style="width:190px">Notes</th>
           <th style="width:60px"></th>
         </tr></thead>
         <tbody>
@@ -2841,21 +2993,31 @@ function renderPerformanceBody(scope){
               <td><input type="text" class="note-input qar-tag" data-vfield="qar" value="${escapeAttr(v.qar||'')}" placeholder="QAR ID"></td>
               <td>${escapeHtml(nameOf(v.interpreterId))}<div class="interp-role">by ${escapeHtml(managerName(v.loggedBy))}</div>${v.autoImported ? `<div class="interp-role" style="color:var(--status-late);">auto-imported</div>` : ''}</td>
               <td>
-                ${(v.items||[]).map((it,idx)=>`
+                ${(v.items||[]).map((it,idx)=>{
+                  const def = catalogItem(it.category, it.item);
+                  const isCoaching = it.pointType === 'coaching';
+                  return `
                   <div class="qar-item-row" data-item-idx="${idx}" style="display:flex;align-items:center;gap:5px;margin-bottom:6px;flex-wrap:wrap;">
                     <select class="note-input" data-vfield="category" style="min-width:140px;">${violationOptionsHtml(it.category)}</select>
                     <select class="note-input" data-vfield="item" style="min-width:140px;">${itemOptionsHtml(it.category, it.item)}</select>
-                    <select class="note-input" data-vfield="severity" style="width:90px;${catalogItem(it.category, it.item)?.severity ? '' : 'display:none;'}">
+                    <select class="note-input" data-vfield="severity" style="width:90px;${(def?.severity && !isCoaching) ? '' : 'display:none;'}">
                       <option value="">—</option>
                       <option value="PME" ${it.severity==='PME'?'selected':''}>PME</option>
                       <option value="DNME" ${it.severity==='DNME'?'selected':''}>DNME</option>
                     </select>
-                    ${!catalogItem(it.category, it.item)?.severity ? severityBadge(it.severity) : ''}
-                    ${(v.items||[]).length > 1 ? `<button type="button" class="btn btn-sm btn-danger" data-item-remove title="Remove this violation">×</button>` : ''}
+                    ${(!def?.severity && !isCoaching) ? severityBadge(it.severity) : ''}
+                    ${isCoaching ? `<span class="sev-badge" style="background:var(--accent-soft);color:var(--accent-dark);">Coaching</span>` : ''}
+                    <label style="display:flex;align-items:center;gap:3px;font-size:11px;color:var(--ink-soft);cursor:pointer;">
+                      <input type="checkbox" data-vfield="coaching-toggle" ${isCoaching?'checked':''}> Coaching
+                    </label>
+                    ${(v.items||[]).length > 1 ? `<button type="button" class="btn btn-sm btn-danger" data-item-remove title="Remove this item">×</button>` : ''}
                   </div>
-                `).join('')}
+                `;}).join('')}
               </td>
-              <td><input type="text" class="note-input" data-vfield="note" value="${escapeAttr(v.note||'')}" placeholder="Note…"></td>
+              <td>
+                <input type="text" class="note-input" data-vfield="note" value="${escapeAttr(v.note||'')}" placeholder="Violation note…">
+                <input type="text" class="note-input" data-vfield="coachingNote" value="${escapeAttr(v.coachingNote||'')}" placeholder="Coaching note…" style="margin-top:4px;background:var(--accent-soft);">
+              </td>
               <td><button class="btn btn-sm btn-danger" data-vdelete="${v.id}" data-vpid="${v.interpreterId}">Del</button></td>
             </tr>
           `).join('')}
@@ -2870,6 +3032,7 @@ function renderPerformanceBody(scope){
     const dateInp = row.querySelector('[data-vfield="date"]');
     const qarInp = row.querySelector('[data-vfield="qar"]');
     const noteInp = row.querySelector('[data-vfield="note"]');
+    const coachNoteInp = row.querySelector('[data-vfield="coachingNote"]');
 
     const findRecord = ()=> (violationsCache[pid]||[]).find(x=>x.id===vid);
 
@@ -2879,17 +3042,20 @@ function renderPerformanceBody(scope){
       rec.date = dateInp.value || rec.date;
       rec.qar = qarInp.value.trim();
       rec.note = noteInp.value.trim();
+      rec.coachingNote = coachNoteInp.value.trim();
       await saveViolations(pid);
     };
     dateInp.addEventListener('change', async ()=>{ await persistHeader(); refresh(); });
     qarInp.addEventListener('change', persistHeader);
     noteInp.addEventListener('change', persistHeader);
+    coachNoteInp.addEventListener('change', persistHeader);
 
     row.querySelectorAll('.qar-item-row').forEach(itemRow=>{
       const idx = Number(itemRow.dataset.itemIdx);
       const catSel = itemRow.querySelector('[data-vfield="category"]');
       const itemSel = itemRow.querySelector('[data-vfield="item"]');
       const sevSel = itemRow.querySelector('[data-vfield="severity"]');
+      const coachToggle = itemRow.querySelector('[data-vfield="coaching-toggle"]');
       const removeBtn = itemRow.querySelector('[data-item-remove]');
 
       wireCatItemSev(catSel, itemSel, sevSel);
@@ -2900,10 +3066,17 @@ function renderPerformanceBody(scope){
         rec.items[idx].category = catSel.value;
         rec.items[idx].item = itemSel.value;
         const def = catalogItem(rec.items[idx].category, rec.items[idx].item);
-        rec.items[idx].severity = def && def.severity ? sevSel.value : (def && def.autoDnme ? 'DNME' : '');
+        const isCoaching = coachToggle.checked;
+        if(isCoaching){
+          rec.items[idx].pointType = 'coaching';
+          rec.items[idx].severity = '';
+        }else{
+          rec.items[idx].pointType = 'violation';
+          rec.items[idx].severity = def && def.severity ? sevSel.value : (def && def.autoDnme ? 'DNME' : '');
+        }
         await saveViolations(pid);
       };
-      [catSel, itemSel, sevSel].forEach(el=> el.addEventListener('change', async ()=>{ await persistItem(); refresh(); }));
+      [catSel, itemSel, sevSel, coachToggle].forEach(el=> el.addEventListener('change', async ()=>{ await persistItem(); refresh(); }));
 
       if(removeBtn){
         removeBtn.addEventListener('click', async ()=>{
@@ -2929,16 +3102,19 @@ function renderPerformanceBody(scope){
   });
 }
 
+
+
 function exportPerformanceCsv(){
   const allActive = roster.filter(p=>p.active !== false);
   const scope = viewFilter === 'mine' ? allActive.filter(p=>p.managerId === currentManagerId) : allActive;
   const filteredScope = perfInterpreterFilter ? scope.filter(p=>p.id===perfInterpreterFilter) : scope;
   ensureViolationsLoadedFor(filteredScope.map(p=>p.id)).then(()=>{
-    const rows = [['Date','QAR ID','Interpreter','Category','Item','Severity','Note','Logged by']];
+    const rows = [['Date','QAR ID','Interpreter','Type','Category','Item','Severity','Note','Coaching Note','Logged by']];
     filteredScope.forEach(p=>{
       (violationsCache[p.id]||[]).filter(v=>v.date.slice(0,7)===currentMonth).forEach(v=>{
         (v.items||[]).forEach(it=>{
-          rows.push([v.date, v.qar||'', p.name, it.category, it.item, it.severity||'', v.note||'', managerName(v.loggedBy)]);
+          const type = (it.pointType||'violation') === 'coaching' ? 'Coaching point' : 'Violation';
+          rows.push([v.date, v.qar||'', p.name, type, it.category, it.item, it.severity||'', v.note||'', v.coachingNote||'', managerName(v.loggedBy)]);
         });
       });
     });
