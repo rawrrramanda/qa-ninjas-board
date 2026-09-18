@@ -527,22 +527,38 @@ let avatarUrlCache = {}; // storage path -> signed URL, cached for the session
 async function uploadAvatarBlob(managerId, blob){
   try{
     const existing = managersList.find(m=>m.user_id===managerId);
-    if(existing && existing.avatar_path){
-      try{ await supabaseClient.storage.from(AVATAR_BUCKET).remove([existing.avatar_path]); }catch(e){}
-    }
+    const oldPath = existing ? existing.avatar_path : null;
+
+    // Upload the NEW picture first, before touching the old one — if this
+    // fails (slow connection, brief network hiccup), the old picture is
+    // still untouched and the person never ends up with no picture at all.
     const path = `${managerId}/${Date.now()}.png`;
     const { error: upErr } = await supabaseClient.storage.from(AVATAR_BUCKET).upload(path, blob, { contentType: 'image/png', upsert: false });
     if(upErr){ console.error('avatar upload failed', upErr); showToast('Could not upload picture'); return false; }
+
     const { data: updRows, error: dbErr } = await supabaseClient.from('managers').update({ avatar_path: path }).eq('user_id', managerId).select();
-    if(dbErr){ console.error('avatar db update failed', dbErr); showToast('Could not save picture'); return false; }
+    if(dbErr){
+      console.error('avatar db update failed', dbErr); showToast('Could not save picture');
+      try{ await supabaseClient.storage.from(AVATAR_BUCKET).remove([path]); }catch(e){} // clean up the orphaned upload
+      return false;
+    }
     if(!updRows || updRows.length === 0){
       console.error('avatar db update affected 0 rows — likely a permissions issue');
       showToast('Could not save picture — permission issue, check console');
+      try{ await supabaseClient.storage.from(AVATAR_BUCKET).remove([path]); }catch(e){}
       return false;
     }
+
     if(existing) existing.avatar_path = path;
     avatarUrlCache = {};
     await getAvatarSignedUrl(path); // warm the cache now, so the caller's immediate re-render already has it
+
+    // Only now, after the new picture is fully and successfully in place,
+    // clean up the old one — best-effort, since failing to delete it isn't
+    // something the person needs to see or retry over.
+    if(oldPath){
+      try{ await supabaseClient.storage.from(AVATAR_BUCKET).remove([oldPath]); }catch(e){}
+    }
     return true;
   }catch(e){ console.error('avatar upload failed', e); showToast('Could not upload picture'); return false; }
 }
@@ -1186,7 +1202,30 @@ async function ensureDateLoaded(dateStr){
   attendanceCache[dateStr] = r || {};
   await applyOffDayAutoFill(dateStr);
 }
-async function saveDate(dateStr, silent){
+async function saveDate(dateStr, silent, interpreterId){
+  // When the edit is scoped to one interpreter (the common case — a status
+  // change, a note, a screenshot), merge against whatever's currently on
+  // the server rather than blindly pushing this whole local snapshot. A
+  // plain overwrite here was the actual cause of screenshots (and other
+  // edits) intermittently vanishing: if another manager saved a change to
+  // a DIFFERENT interpreter in this same date's shared record a moment
+  // before this save landed — before realtime had delivered their update
+  // to this browser yet — this save would silently overwrite their change
+  // with this browser's older copy of the whole day.
+  if(interpreterId){
+    let latest;
+    try{ latest = (await storageGet('attendance:' + dateStr)) || {}; }
+    catch(e){ latest = null; }
+    if(latest){
+      latest[interpreterId] = attendanceCache[dateStr][interpreterId];
+      attendanceCache[dateStr] = latest; // adopt the merged, now-current view locally too
+      const ok = await storageSet('attendance:' + dateStr, latest);
+      if(!silent) showToast(ok ? 'Saved' : 'Save failed — try again');
+      return ok;
+    }
+    // Fall through to a plain save if the re-fetch itself failed — better
+    // to save something than silently do nothing.
+  }
   const ok = await storageSet('attendance:' + dateStr, attendanceCache[dateStr]);
   if(!silent) showToast(ok ? 'Saved' : 'Save failed — try again');
   return ok;
@@ -1552,7 +1591,7 @@ async function renderToday(main){
       const id = btn.dataset.id, status = btn.dataset.status;
       setField(currentDate, id, 'status', status);
       setField(currentDate, id, 'autoOff', false); // any manual change is now a confirmed choice, not an automatic default
-      await saveDate(currentDate);
+      await saveDate(currentDate, false, id);
       refresh();
     });
   });
@@ -1561,7 +1600,7 @@ async function renderToday(main){
   document.querySelectorAll('[data-note]').forEach(inp=>{
     inp.addEventListener('change', async ()=>{
       setField(currentDate, inp.dataset.note, 'note', inp.value);
-      await saveDate(currentDate);
+      await saveDate(currentDate, false, inp.dataset.note);
     });
   });
 
@@ -1580,7 +1619,7 @@ async function renderToday(main){
         setField(currentDate, inp.dataset.id, inp.dataset.upload, url);
         setField(currentDate, inp.dataset.id, inp.dataset.upload+'At', new Date().toISOString());
         setField(currentDate, inp.dataset.id, inp.dataset.upload+'By', currentManagerId);
-        const ok = await saveDate(currentDate);
+        const ok = await saveDate(currentDate, false, inp.dataset.id);
         if(ok){ refresh(); if(oldUrl) deleteScreenshot(oldUrl); }
       }catch(err){
         showToast('Could not process image');
@@ -1597,7 +1636,7 @@ async function renderToday(main){
       setField(currentDate, id, field, '');
       setField(currentDate, id, field+'At', '');
       setField(currentDate, id, field+'By', '');
-      const ok = await saveDate(currentDate);
+      const ok = await saveDate(currentDate, false, id);
       if(ok){ refresh(); if(oldUrl) deleteScreenshot(oldUrl); }
     });
   });
