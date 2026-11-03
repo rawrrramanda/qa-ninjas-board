@@ -400,6 +400,27 @@
     tr{border-bottom:1px solid var(--border);padding:10px 0;}
     td{border:none;padding:6px 14px;}
   }
+  .prof-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:12px 18px;}
+  .prof-f .k{font-size:11px;color:var(--ink-faint);text-transform:uppercase;letter-spacing:.04em;}
+  .prof-f .v{font-size:14px;word-break:break-word;}
+  .prof-sec{margin-bottom:18px;padding:16px 18px;} .prof-head{margin-bottom:18px;padding:16px 18px;}
+  .prof-h{font-weight:600;font-size:15px;margin-bottom:12px;} .prof-sub{font-weight:400;font-size:12px;color:var(--ink-faint);margin-left:8px;}
+  .prof-list{width:100%;border-collapse:collapse;font-size:13px;} .prof-list th{text-align:left;font-size:11px;color:var(--ink-faint);text-transform:uppercase;padding:6px 8px;border-bottom:1px solid var(--border);}
+  .prof-list td{padding:8px;border-bottom:1px solid var(--border);vertical-align:top;} .prof-row:hover{background:var(--accent-soft);}
+  .prof-tier{display:inline-block;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:600;background:var(--accent-soft);color:var(--accent-dark);}
+  .prof-tier-low{background:#FBE9E7;color:#B3402F;} .prof-tier-high{background:#E3F2E8;color:#2F7A4C;} .prof-tier-none{background:#EEE;color:#777;}
+  .prof-tag{display:inline-block;padding:2px 8px;border-radius:6px;font-size:11.5px;margin:0 4px 4px 0;background:var(--accent-soft);color:var(--ink-soft);}
+  .prof-tag-violation{background:#FBE9E7;color:#B3402F;} .prof-tag-coaching{background:var(--accent-soft);color:var(--accent-dark);}
+  .prof-good{color:var(--status-present);font-weight:600;} .prof-mid{color:#B7791F;font-weight:600;} .prof-bad{color:#B3402F;font-weight:600;}
+  .prof-bar{height:8px;border-radius:99px;background:var(--border);margin:10px 0 6px;overflow:hidden;} .prof-bar>div{height:100%;background:var(--status-present);}
+  .prof-item{padding:10px 0;border-top:1px solid var(--border);font-size:13px;margin-top:6px;}
+  .prof-details summary{cursor:pointer;color:var(--ink-soft);font-size:12px;margin-top:4px;} .prof-pre{white-space:pre-wrap;font-size:12.5px;padding:6px 0;max-height:260px;overflow:auto;}
+  .prof-trend{display:flex;gap:6px;align-items:flex-end;overflow-x:auto;padding:6px 2px 4px;}
+  .prof-trend-col{display:flex;flex-direction:column;align-items:center;min-width:44px;cursor:pointer;padding:2px 4px;border-radius:8px;}
+  .prof-trend-col:hover,.prof-trend-col.sel{background:var(--accent-soft);}
+  .prof-trend-stack{display:flex;flex-direction:column;justify-content:flex-end;height:72px;width:22px;}
+  .prof-trend-v{background:#D9695A;border-radius:0 0 4px 4px;} .prof-trend-c{background:#6FA3A8;border-radius:4px 4px 0 0;}
+  .prof-trend-n{font-size:11px;color:var(--ink-soft);height:14px;} .prof-trend-l{font-size:10.5px;color:var(--ink-faint);margin-top:3px;white-space:nowrap;}
 </style>
 </head>
 <body>
@@ -2733,7 +2754,272 @@ function updateCoachingSummary(){
     : '';
 }
 
+/* ================= Interpreter profiles (Performance tab) ================= */
+let perfProfileId = null;
+let perfShowAllComplaints = false;
+let perfLogScope = 'month';   // 'month' | 'all' — scope of the performance log in a profile
+const profileCache = {};   // 'pstats:2026-10' -> doc | null
+function profileKey(kind, ym){ return kind === 'pcompl' ? 'pcompl' : kind + ':' + ym; }
+async function loadProfileDoc(kind, ym){
+  const k = profileKey(kind, ym);
+  if(profileCache[k] === undefined){ const v = await storageGet(k); profileCache[k] = v || null; }
+  return profileCache[k];
+}
+function monthsBack(ym, n){
+  let [y, m] = ym.split('-').map(Number); const out = [];
+  for(let i=0;i<n;i++){ out.push(y + '-' + pad(m)); m--; if(m===0){ m = 12; y--; } }
+  return out;
+}
+function monthLabel(ym){ const [y,m] = ym.split('-').map(Number); return new Date(y, m-1, 1).toLocaleString('en-US', { month:'short', year:'numeric' }); }
+const fmtNum = (n, d=2) => (n===null || n===undefined || n==='') ? '—' : Number(n).toFixed(d);
+const fmtInt = n => (n===null || n===undefined || n==='') ? '—' : String(n);
+function tierBadge(t){
+  if(!t) return '<span class="prof-tier prof-tier-none">No tier</span>';
+  const k = /high/i.test(t) ? 'high' : /improv|low|watch/i.test(t) ? 'low' : 'std';
+  return `<span class="prof-tier prof-tier-${k}">${escapeHtml(t)}</span>`;
+}
+function scoreClass(s){ if(s===null||s===undefined) return ''; return s >= 90 ? 'prof-good' : s >= 85 ? 'prof-mid' : 'prof-bad'; }
+function itemTags(items, type){
+  const list = (items||[]).filter(it => (it.pointType||'violation') === type);
+  if(!list.length) return '<span style="color:var(--ink-faint);">—</span>';
+  return list.map(it => `<span class="prof-tag prof-tag-${type}">${escapeHtml(it.item)}${type==='violation' && it.severity ? ' · '+escapeHtml(it.severity) : ''}</span>`).join('');
+}
+function longText(label, text){
+  if(!text) return '';
+  return `<details class="prof-details"><summary>${escapeHtml(label)}</summary><div class="prof-pre">${escapeHtml(text)}</div></details>`;
+}
+function profSection(title, body, sub){
+  return `<div class="panel prof-sec"><div class="prof-h">${escapeHtml(title)}${sub ? `<span class="prof-sub">${escapeHtml(sub)}</span>` : ''}</div>${body}</div>`;
+}
+function profChip(label, value, cls){ return `<div class="stat-chip"><div class="n ${cls||''}">${value}</div><div class="l">${escapeHtml(label)}</div></div>`; }
+
 async function renderPerformance(main){
+  if(perfProfileId && !roster.find(p=>p.id===perfProfileId)) perfProfileId = null;
+  return perfProfileId ? renderPerfProfile(main) : renderPerfList(main);
+}
+
+/* ---- List of interpreters ---- */
+async function renderPerfList(main){
+  const allActive = roster.filter(p=>p.active !== false);
+  const scope = viewFilter === 'mine' ? allActive.filter(p=>p.managerId === currentManagerId) : allActive;
+  const [stats, csat] = await Promise.all([loadProfileDoc('pstats', currentMonth), loadProfileDoc('pcsat', currentMonth)]);
+  const search = (window.__perfSearch || '').toLowerCase();
+  const rows = scope.filter(p=>!search || p.name.toLowerCase().includes(search)).sort((a,b)=>a.name.localeCompare(b.name));
+  main.innerHTML = `
+    <div class="page-head">
+      <div class="page-title">Performance<span class="sub">Pick an interpreter to see their full profile</span></div>
+      <div class="date-nav">
+        <input type="month" id="perfMonthPick" value="${currentMonth}">
+        <button class="btn btn-sm" id="perfExportCsv">Export CSV</button>
+      </div>
+    </div>
+    <div class="date-nav" style="margin-bottom:16px;">
+      <button class="btn btn-sm ${viewFilter==='mine'?'btn-primary':''}" data-filter="mine">My team</button>
+      <button class="btn btn-sm ${viewFilter==='all'?'btn-primary':''}" data-filter="all">All teams</button>
+      <input type="text" id="perfSearch" placeholder="Search interpreter…" value="${escapeAttr(window.__perfSearch||'')}" style="margin-left:8px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);font-size:13px;">
+    </div>
+    ${!stats ? `<div class="panel" style="padding:10px 14px;margin-bottom:14px;font-size:13px;color:var(--ink-soft);">No synced performance data for ${monthLabel(currentMonth)} yet. Details appear once the master sheet for that month has synced.</div>` : ''}
+    <div class="panel">
+      ${rows.length === 0 ? `<div class="empty-state"><div class="big">No interpreters to show</div></div>` : `
+      <table class="prof-list">
+        <thead><tr><th>Interpreter</th><th>Tier</th><th>QARs</th><th>Avg QA score</th><th>CSAT</th><th>Pending coaching</th></tr></thead>
+        <tbody>
+          ${rows.map(p=>{
+            const s = stats && stats[p.id]; const c = csat && csat[p.id];
+            const qa = s ? (s.avgSisense ?? s.avgInternal) : null;
+            const cs = s && s.csatMtd != null ? s.csatMtd : (c ? c.final : null);
+            const cur = s ? (s.qarsInternal ?? s.qarsSisense) : null;
+            return `<tr class="prof-row" data-open-profile="${p.id}" style="cursor:pointer;">
+              <td><div class="interp-name">${escapeHtml(p.name)}</div><div class="interp-role">${escapeHtml(p.language||'')} · ${escapeHtml(managerName(p.managerId))}</div></td>
+              <td>${s ? tierBadge(s.tier) : '—'}</td>
+              <td>${s ? `${fmtInt(cur)} / ${fmtInt(s.eomTarget)}${s.needed ? `<div class="interp-role">${s.needed} more to MTD</div>` : ''}` : '—'}</td>
+              <td class="${scoreClass(qa)}">${fmtNum(qa)}</td>
+              <td>${fmtNum(cs)}</td>
+              <td>${s && s.coachPending ? `<span class="prof-tag prof-tag-coaching">${s.coachPending}</span>` : (s ? '0' : '—')}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>`}
+    </div>`;
+  document.getElementById('perfMonthPick').addEventListener('change', e=>{ currentMonth = e.target.value; refresh(); });
+  document.getElementById('perfExportCsv').addEventListener('click', async ()=>{ await ensureViolationsLoadedFor(allActive.map(p=>p.id)); exportPerformanceCsv(); });
+  main.querySelectorAll('[data-filter]').forEach(b=>b.addEventListener('click', ()=>{ viewFilter = b.dataset.filter; refresh(); }));
+  const si = document.getElementById('perfSearch');
+  si.addEventListener('input', ()=>{ window.__perfSearch = si.value; const pos = si.selectionStart; refresh(); setTimeout(()=>{ const n = document.getElementById('perfSearch'); if(n){ n.focus(); n.setSelectionRange(pos,pos); } }, 30); });
+  main.querySelectorAll('[data-open-profile]').forEach(tr=>tr.addEventListener('click', ()=>{ perfProfileId = tr.dataset.openProfile; perfShowAllComplaints = false; refresh(); }));
+}
+
+/* ---- One interpreter's profile ---- */
+async function renderPerfProfile(main){
+  const p = roster.find(x=>x.id===perfProfileId);
+  const hist = monthsBack(currentMonth, 6);
+  const [statsDocs, csatDocs] = await Promise.all([
+    Promise.all(hist.map(m=>loadProfileDoc('pstats', m))), Promise.all(hist.map(m=>loadProfileDoc('pcsat', m)))
+  ]);
+  const [coachDoc, plansDoc, eqDoc, calDoc, complDoc] = await Promise.all([
+    loadProfileDoc('pcoach', currentMonth), loadProfileDoc('pplans', currentMonth), loadProfileDoc('peq', currentMonth),
+    loadProfileDoc('pcal', currentMonth), loadProfileDoc('pcompl', '')
+  ]);
+  await ensureViolationsLoadedFor([p.id]);
+  await ensureMonthLoaded(currentMonth);
+
+  const S = statsDocs.map(d=>d && d[p.id] || null);
+  const cur = S[0] || S.find(Boolean) || null;           // details fall back to the latest month that has data
+  const C = csatDocs.map(d=>d && d[p.id] || null);
+
+  // ---- brand checks for the month
+  const n = daysInMonth(currentMonth), todayYm = todayStr().slice(0,7);
+  const lastDay = currentMonth === todayYm ? Number(todayStr().slice(8,10)) : n;
+  const bcRows = [];
+  for(let d=lastDay; d>=1; d--){
+    const ds = currentMonth + '-' + pad(d); const e = (attendanceCache[ds]||{})[p.id];
+    if(e && (e.status || e.brandCheck)) bcRows.push({ date: ds, e });
+  }
+  const signed = await getSignedUrls(bcRows.map(r=>r.e.brandCheck));
+  const expected = bcRows.filter(r=>r.e.status && r.e.status !== 'O').length;
+  const submitted = bcRows.filter(r=>r.e.brandCheck).length;
+
+  // ---- performance log (violations + coaching points) — this month or all time
+  const allLog = (violationsCache[p.id]||[]).filter(v=>v.date).slice().sort((a,b)=>b.date.localeCompare(a.date));
+  const logRows = perfLogScope === 'all' ? allLog : allLog.filter(v=>v.date.slice(0,7)===currentMonth);
+  const countOf = (rows, type, sev) => rows.reduce((s,v)=>s+(v.items||[]).filter(i=>(i.pointType||'violation')===type && (!sev || i.severity===sev)).length,0);
+  const vCount = countOf(logRows,'violation'), cCount = countOf(logRows,'coaching');
+  const pmeCount = countOf(logRows,'violation','PME'), dnmeCount = countOf(logRows,'violation','DNME');
+  // monthly trend: every month from the first record (max 18) up to the selected month
+  const logMonths = [...new Set(allLog.map(v=>v.date.slice(0,7)).concat([currentMonth]))].sort();
+  const trendMonths = logMonths.slice(-18);
+  const byMonth = Object.fromEntries(trendMonths.map(m=>{ const rows = allLog.filter(v=>v.date.slice(0,7)===m); return [m, { q: rows.length, v: countOf(rows,'violation'), c: countOf(rows,'coaching') }]; }));
+  const trendMax = Math.max(1, ...trendMonths.map(m=>byMonth[m].v + byMonth[m].c));
+  // most repeated items in the chosen scope
+  const itemStats = {};
+  logRows.forEach(v=>(v.items||[]).forEach(it=>{ const k = it.item; const o = itemStats[k] ||= { v:0, c:0, last:'' }; if((it.pointType||'violation')==='coaching') o.c++; else o.v++; if(v.date > o.last) o.last = v.date; }));
+  const topItems = Object.entries(itemStats).sort((a,b)=>(b[1].v+b[1].c)-(a[1].v+a[1].c)).slice(0,8);
+  const LOG_LIMIT = 100;
+
+  const sessions = (coachDoc && coachDoc[p.id]) || [];
+  const plans = (plansDoc && plansDoc[p.id]) || [];
+  const eqs = (eqDoc && eqDoc[p.id]) || [];
+  const cals = (calDoc && calDoc[p.id]) || [];
+  const allCompl = ((complDoc && complDoc[p.id]) || []).slice().sort((a,b)=>(b.received||'').localeCompare(a.received||''));
+  const compl = perfShowAllComplaints ? allCompl : allCompl.filter(c=>(c.received||'').slice(0,7)===currentMonth);
+
+  const d = cur || {};
+  const pct = d.eomTarget ? Math.min(100, Math.round(((d.qarsInternal ?? d.qarsSisense ?? 0) / d.eomTarget) * 100)) : 0;
+  const field = (k, v) => `<div class="prof-f"><div class="k">${k}</div><div class="v">${v ? v : '—'}</div></div>`;
+
+  main.innerHTML = `
+    <div class="page-head">
+      <div class="page-title"><button class="btn btn-sm" id="profBack" style="margin-right:10px;">← All interpreters</button>${escapeHtml(p.name)}</div>
+      <div class="date-nav"><input type="month" id="perfMonthPick" value="${currentMonth}"></div>
+    </div>
+
+    <div class="panel prof-head">
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
+        ${tierBadge(d.tier)} <span class="prof-tag">${p.active===false ? 'Inactive' : 'Active'}</span>
+        ${!cur ? `<span style="font-size:12px;color:var(--ink-faint);">No sheet data synced for this interpreter yet.</span>` : ''}
+      </div>
+      <div class="prof-grid">
+        ${field('Language', escapeHtml(d.language || p.language || ''))}
+        ${field('Shift', escapeHtml(((d.shift || p.shift || '') + (d.scheduleType ? ' · ' + d.scheduleType : (p.type ? ' · ' + p.type : '')))))}
+        ${field('Days off', escapeHtml(d.daysOff || p.offDays || ''))}
+        ${field('Platform', escapeHtml(d.platform || ''))}
+        ${field('Team', escapeHtml(managerName(p.managerId)))}
+        ${field('IEX ID', escapeHtml(d.iexId || p.iexId || ''))}
+        ${field('Interpreter ID', escapeHtml(d.interpreterId || p.externalId || ''))}
+        ${field('Email', (d.email || p.email) ? `<a href="mailto:${escapeAttr(d.email || p.email)}">${escapeHtml(d.email || p.email)}</a>` : '')}
+        ${field('Phone', escapeHtml(d.phone || ''))}
+        ${field('Production start', escapeHtml(d.startDate || ''))}
+      </div>
+    </div>
+
+    ${profSection('Targets & scores', `
+      <div class="stat-row">
+        ${profChip('EOM target', fmtInt(d.eomTarget))}
+        ${profChip('Target MTD', fmtInt(d.targetMtd))}
+        ${profChip('Current QARs', fmtInt(d.qarsInternal ?? d.qarsSisense))}
+        ${profChip('Needed to MTD target', fmtInt(d.needed))}
+        ${profChip('Avg QA score', fmtNum(d.avgSisense ?? d.avgInternal), scoreClass(d.avgSisense ?? d.avgInternal))}
+        ${profChip('Current CSAT', fmtNum(d.csatMtd))}
+      </div>
+      ${d.eomTarget ? `<div class="prof-bar"><div style="width:${pct}%;"></div></div><div class="interp-role">${pct}% of end-of-month target · weekly target ${fmtInt(d.weeklyTarget)}${d.lastQarDate ? ' · last QAR '+d.lastQarDate : ''}</div>` : ''}
+    `, monthLabel(currentMonth))}
+
+    ${profSection('Performance tier history', `
+      <table class="prof-list"><thead><tr><th>Month</th><th>Tier</th><th>EOM target</th><th>QARs</th><th>Avg QA</th><th>CSAT</th></tr></thead><tbody>
+        ${hist.map((m,i)=>{ const s = S[i]; return `<tr><td>${monthLabel(m)}</td><td>${s ? tierBadge(s.tier) : '—'}</td><td>${s ? fmtInt(s.eomTarget) : '—'}</td><td>${s ? fmtInt(s.qarsInternal ?? s.qarsSisense) : '—'}</td><td class="${scoreClass(s && (s.avgSisense ?? s.avgInternal))}">${s ? fmtNum(s.avgSisense ?? s.avgInternal) : '—'}</td><td>${s ? fmtNum(s.csatMtd) : '—'}</td></tr>`; }).join('')}
+      </tbody></table>`, 'last 6 months')}
+
+    ${profSection('CSAT', `
+      <table class="prof-list"><thead><tr><th>Month</th><th>MVCC (calls)</th><th>Voyce (calls)</th><th>Final avg</th><th>Sisense MVCC</th><th>Sisense Voyce</th><th>Regular avg</th></tr></thead><tbody>
+        ${hist.map((m,i)=>{ const c = C[i]; return `<tr><td>${monthLabel(m)}</td>${c ? `<td>${fmtNum(c.mvccAvg)} (${fmtInt(c.mvccCalls)})</td><td>${fmtNum(c.voyceAvg)} (${fmtInt(c.voyceCalls)})</td><td><b>${fmtNum(c.final)}</b></td><td>${fmtNum(c.sisenseMvcc)}</td><td>${fmtNum(c.sisenseVoyce)}</td><td>${fmtNum(c.regular)}</td>` : '<td colspan="6" style="color:var(--ink-faint);">No data</td>'}</tr>`; }).join('')}
+      </tbody></table>`, 'last 6 months')}
+
+    ${profSection('Coaching', `
+      <div class="stat-row">
+        ${profChip('QARs requiring coaching', fmtInt(d.coachRequired))}
+        ${profChip('Covered', fmtInt(d.coachCovered))}
+        ${profChip('Pending', fmtInt(d.coachPending), d.coachPending ? 'prof-bad' : '')}
+        ${profChip('Sessions this month', fmtInt(d.coachSessionsMtd))}
+        ${profChip('Last session', escapeHtml(d.lastCoaching || '—'))}
+      </div>
+      ${sessions.length ? sessions.map(s=>`<div class="prof-item"><div><b>${escapeHtml(s.coachingDate||'')}</b> · ${escapeHtml(s.qar||'')} · ${fmtInt(s.minutes)} min · coach ${escapeHtml(s.coach||'—')}</div>
+        ${longText('Observations', s.observations)}${longText("Interpreter's comments", s.comments)}${longText('Actions to be taken', s.actions)}</div>`).join('') : `<div class="interp-role" style="margin-top:8px;">No coaching sessions recorded in ${monthLabel(currentMonth)}.</div>`}
+      <table class="prof-list" style="margin-top:12px;"><thead><tr><th>Month</th><th>Requiring</th><th>Covered</th><th>Pending</th><th>Sessions</th></tr></thead><tbody>
+        ${hist.map((m,i)=>{ const s = S[i]; return `<tr><td>${monthLabel(m)}</td>${s ? `<td>${fmtInt(s.coachRequired)}</td><td>${fmtInt(s.coachCovered)}</td><td>${fmtInt(s.coachPending)}</td><td>${fmtInt(s.coachSessionsMtd)}</td>` : '<td colspan="4" style="color:var(--ink-faint);">No data</td>'}</tr>`; }).join('')}
+      </tbody></table>`, 'history by month')}
+
+    ${profSection('Performance log & trends', `
+      <div class="date-nav" style="margin-bottom:12px;">
+        <button class="btn btn-sm ${perfLogScope==='month'?'btn-primary':''}" data-log-scope="month">${monthLabel(currentMonth)}</button>
+        <button class="btn btn-sm ${perfLogScope==='all'?'btn-primary':''}" data-log-scope="all">All time</button>
+      </div>
+      <div class="stat-row">${profChip('QARs flagged', logRows.length)}${profChip('Violations', vCount)}${profChip('PME', pmeCount)}${profChip('DNME', dnmeCount, dnmeCount ? 'prof-bad' : '')}${profChip('Coaching points', cCount)}</div>
+      <div class="interp-role" style="margin:6px 0 4px;">Flagged items per month <span class="prof-tag prof-tag-violation" style="margin-left:6px;">violations</span><span class="prof-tag prof-tag-coaching">coaching points</span> — click a month to open it</div>
+      <div class="prof-trend">
+        ${trendMonths.map(m=>{ const b = byMonth[m]; return `<div class="prof-trend-col ${m===currentMonth?'sel':''}" data-pick-month="${m}" title="${monthLabel(m)}: ${b.v} violation(s), ${b.c} coaching point(s), ${b.q} QAR(s) flagged">
+          <div class="prof-trend-n">${b.v + b.c || ''}</div>
+          <div class="prof-trend-stack"><div class="prof-trend-c" style="height:${Math.round(b.c/trendMax*70)}px;"></div><div class="prof-trend-v" style="height:${Math.round(b.v/trendMax*70)}px;"></div></div>
+          <div class="prof-trend-l">${monthLabel(m).replace(' 20',' ’')}</div></div>`; }).join('')}
+      </div>
+      ${topItems.length ? `<div class="interp-role" style="margin:14px 0 4px;">Most repeated items (${perfLogScope==='all' ? 'all time' : monthLabel(currentMonth)})</div>
+      <table class="prof-list"><thead><tr><th>Item</th><th>Violations</th><th>Coaching points</th><th>Last flagged</th></tr></thead><tbody>
+        ${topItems.map(([k,o])=>`<tr><td>${escapeHtml(k)}</td><td>${o.v || '—'}</td><td>${o.c || '—'}</td><td>${escapeHtml(o.last)}</td></tr>`).join('')}
+      </tbody></table>` : ''}
+      <div class="interp-role" style="margin:14px 0 4px;">QAR log${logRows.length > LOG_LIMIT ? ` (latest ${LOG_LIMIT} of ${logRows.length})` : ''}</div>
+      ${logRows.length ? `<table class="prof-list"><thead><tr><th>Date</th><th>QAR</th><th>Score</th><th>Violations</th><th>Coaching points</th></tr></thead><tbody>
+        ${logRows.slice(0, LOG_LIMIT).map(v=>`<tr><td>${escapeHtml(v.date)}</td><td>${escapeHtml(v.qar||'')}<div class="interp-role">${escapeHtml(managerName(v.loggedBy))}</div></td><td class="${scoreClass(v.score)}">${v.score!=null?fmtNum(v.score,0):'—'}</td><td>${itemTags(v.items,'violation')}${longText('Notes', v.note)}</td><td>${itemTags(v.items,'coaching')}${longText('Coaching note', v.coachingNote)}</td></tr>`).join('')}
+      </tbody></table>` : `<div class="interp-role">No flagged QARs ${perfLogScope==='all' ? 'on record' : 'in '+monthLabel(currentMonth)}.</div>`}`, perfLogScope==='all' ? 'overall' : monthLabel(currentMonth))}
+
+    ${profSection('Brand checks', `
+      <div class="stat-row">${profChip('Submitted', submitted)}${profChip('Working days logged', expected)}</div>
+      ${bcRows.length ? `<table class="prof-list"><thead><tr><th>Date</th><th>Attendance</th><th>Screenshot</th><th>Note</th></tr></thead><tbody>
+        ${bcRows.map(r=>{ const url = signed[pathFromStoredValue(r.e.brandCheck)]; return `<tr><td>${r.date}</td><td>${escapeHtml(r.e.status||'—')}</td><td>${r.e.brandCheck ? (url ? `<img class="thumb" src="${url}" data-view-img="${url}" style="cursor:pointer;">` : '<span title="Could not load image">⚠</span>') : '<span style="color:var(--ink-faint);">none</span>'}${r.e.brandCheckBy ? `<div class="interp-role">by ${escapeHtml(managerName(r.e.brandCheckBy))}</div>` : ''}</td><td>${escapeHtml(r.e.note||'')}</td></tr>`; }).join('')}
+      </tbody></table>` : `<div class="interp-role" style="margin-top:8px;">Nothing logged in ${monthLabel(currentMonth)}.</div>`}`, monthLabel(currentMonth))}
+
+    ${profSection('Complaints', `
+      ${compl.length ? compl.map(c=>`<div class="prof-item"><div><b>${escapeHtml(c.received||'')}</b> · ${escapeHtml(c.callAt||'')} · ${c.onRecord ? 'On record: '+escapeHtml(c.onRecord) : ''}${c.waivedOn ? ' · waived '+escapeHtml(c.waivedOn) : ''} · coach ${escapeHtml(c.coach||'—')}</div>
+        ${longText("Client's comment", c.client)}${longText("Interpreter's comments", c.interpreter)}${longText('Actions', c.actions)}</div>`).join('') : `<div class="interp-role">No complaints ${perfShowAllComplaints ? 'on file' : 'received in '+monthLabel(currentMonth)}.</div>`}
+      ${allCompl.length ? `<button class="btn btn-sm" id="toggleCompl" style="margin-top:10px;">${perfShowAllComplaints ? 'Show selected month only' : `Show all history (${allCompl.length})`}</button>` : ''}`)}
+
+    ${eqs.length ? profSection("Equiti's QARs", `<table class="prof-list"><thead><tr><th>Date</th><th>QAR</th><th>Reviewer</th><th>Score</th><th>Violations</th><th>Coaching points</th></tr></thead><tbody>
+      ${eqs.map(q=>`<tr><td>${escapeHtml(q.date||'')}</td><td>${escapeHtml(q.qar)}</td><td>${escapeHtml(q.owner||'')}</td><td class="${scoreClass(q.score)}">${q.score!=null?fmtNum(q.score,0):'—'}</td><td>${itemTags(q.items,'violation')}${longText('Notes', q.note)}</td><td>${itemTags(q.items,'coaching')}</td></tr>`).join('')}
+    </tbody></table>`, 'view only') : ''}
+
+    ${cals.length ? profSection('Calibration', `<table class="prof-list"><thead><tr><th>Type</th><th>Date</th><th>QAR</th><th>Reviewer</th><th>Score</th></tr></thead><tbody>
+      ${cals.map(q=>`<tr><td>${escapeHtml(q.kind||'')}</td><td>${escapeHtml(q.date||'')}</td><td>${escapeHtml(q.qar)}</td><td>${escapeHtml(q.owner||'')}</td><td class="${scoreClass(q.score)}">${q.score!=null?fmtNum(q.score,0):'—'}</td></tr>`).join('')}
+    </tbody></table>`, monthLabel(currentMonth)) : ''}
+
+    ${plans.length ? profSection('Action plans', plans.map(a=>`<div class="prof-item"><div><b>Supervisor:</b> ${escapeHtml(a.supervisor||'—')}</div>${longText('Plan', a.plan)}${longText('Measurables (EOM)', a.measurables)}${a.comments ? `<div style="margin-top:6px;"><b>Updates:</b> ${escapeHtml(a.comments)}</div>` : ''}</div>`).join(''), monthLabel(currentMonth)) : ''}
+  `;
+  document.getElementById('profBack').addEventListener('click', ()=>{ perfProfileId = null; refresh(); });
+  document.getElementById('perfMonthPick').addEventListener('change', e=>{ currentMonth = e.target.value; refresh(); });
+  main.querySelectorAll('[data-log-scope]').forEach(b=>b.addEventListener('click', ()=>{ perfLogScope = b.dataset.logScope; refresh(); }));
+  main.querySelectorAll('[data-pick-month]').forEach(el=>el.addEventListener('click', ()=>{ currentMonth = el.dataset.pickMonth; refresh(); }));
+  const tc = document.getElementById('toggleCompl'); if(tc) tc.addEventListener('click', ()=>{ perfShowAllComplaints = !perfShowAllComplaints; refresh(); });
+  main.querySelectorAll('[data-view-img]').forEach(el=>{ el.addEventListener('click', ()=>openImageModal(el.dataset.viewImg)); });
+}
+
+async function renderPerformanceLegacy(main){
   const allActive = roster.filter(p=>p.active !== false);
   const scope = viewFilter === 'mine' ? allActive.filter(p=>p.managerId === currentManagerId) : allActive;
   await ensureViolationsLoadedFor(scope.map(p=>p.id));
@@ -2744,7 +3030,7 @@ async function renderPerformance(main){
       <div class="date-nav">
         <input type="month" id="perfMonthPick" value="${currentMonth}">
         <button class="btn btn-sm" id="perfExportCsv">Export CSV</button>
-        <label class="btn btn-sm btn-primary" style="cursor:pointer;">Import QA CSV
+        <label class="btn btn-sm btn-primary" style="cursor:pointer;${SHEET_PERFORMANCE_SYNC?'display:none;':''}">Import QA CSV
           <input type="file" id="perfImportCsv" accept=".csv" style="display:none;">
         </label>
       </div>
@@ -2761,7 +3047,8 @@ async function renderPerformance(main){
       </select>
     </div>
 
-    <div class="panel" style="margin-bottom:22px;">
+    ${SHEET_PERFORMANCE_SYNC ? `<div class="panel" style="padding:10px 14px;margin-bottom:14px;font-size:13px;color:var(--ink-soft);">Performance is synced automatically from the master sheet (QARs, violations and coaching points). It is view-only here.</div>` : ''}
+    <div class="panel" style="margin-bottom:22px;${SHEET_PERFORMANCE_SYNC?'display:none;':''}">
       ${scope.length === 0 ? `
         <div class="empty-state">
           <div class="big">${viewFilter==='mine' ? 'No interpreters assigned to you yet' : 'No active interpreters'}</div>
@@ -3028,10 +3315,10 @@ function renderPerformanceBody(scope){
         </tr></thead>
         <tbody>
           ${monthLog.map(v=>`
-            <tr data-vid="${v.id}" data-pid="${v.interpreterId}">
+            <tr data-vid="${v.id}" data-pid="${v.interpreterId}" ${v.source==='sheet'?'data-sheet="1"':''}>
               <td><input type="date" class="note-input" data-vfield="date" value="${v.date}"></td>
               <td><input type="text" class="note-input qar-tag" data-vfield="qar" value="${escapeAttr(v.qar||'')}" placeholder="QAR ID"></td>
-              <td>${escapeHtml(nameOf(v.interpreterId))}<div class="interp-role">by ${escapeHtml(managerName(v.loggedBy))}</div>${v.autoImported ? `<div class="interp-role" style="color:var(--status-late);">auto-imported</div>` : ''}</td>
+              <td>${escapeHtml(nameOf(v.interpreterId))}<div class="interp-role">by ${escapeHtml(managerName(v.loggedBy))}</div>${v.autoImported ? `<div class="interp-role" style="color:var(--status-late);">auto-imported</div>` : ''}${v.source==='sheet' ? `<div class="interp-role" style="color:var(--ink-faint);">from sheet${v.score!=null && v.score!=='' ? ' · score '+escapeHtml(String(v.score)) : ''}</div>` : ''}</td>
               <td>
                 ${(v.items||[]).map((it,idx)=>{
                   const def = catalogItem(it.category, it.item);
@@ -3139,6 +3426,17 @@ function renderPerformanceBody(scope){
       await saveViolations(pid);
       refresh();
     });
+  });
+  lockSheetRecords();
+}
+
+// Records that come from the master sheet are view-only here: the sheet is the source of truth,
+// so edits would be overwritten by the next sync anyway.
+const SHEET_PERFORMANCE_SYNC = true;
+function lockSheetRecords(){
+  document.querySelectorAll('tr[data-sheet="1"]').forEach(tr=>{
+    tr.querySelectorAll('input,select,textarea').forEach(el=>{ el.disabled = true; });
+    tr.querySelectorAll('[data-item-remove],[data-vdelete]').forEach(b=>b.remove());
   });
 }
 
@@ -3997,6 +4295,11 @@ function handleKvStoreChange(payload){
     if(currentView === 'today' || currentView === 'overview') requestRealtimeRefresh();
     return;
   }
+  if(/^(pstats|pcsat|pcoach|pplans|peq|pcal):/.test(key) || key === 'pcompl'){
+    profileCache[key] = deleted ? null : (payload.new.value || null);
+    if(currentView === 'performance') requestRealtimeRefresh();
+    return;
+  }
   if(key.startsWith('violations:')){
     const interpId = key.slice('violations:'.length);
     if(violationsCache[interpId] !== undefined){
@@ -4144,9 +4447,14 @@ function renderSyncReviewPanel(){
       if(it.kind==='unmatched_name'){
         const cands = (it.candidates||[]).map(id=>roster.find(p=>p.id===id)).filter(Boolean);
         return `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px;font-size:13px;">
-          <span>Brand check from <b>${escapeHtml(it.raw_name||'?')}</b> (${escapeHtml(pl.date||'')}) — who is this?</span>
+          <span>${it.source==='qar' ? `QAR <b>${escapeHtml(pl.qar||'')}</b> for` : it.source==='profile' ? 'Sheet data for' : 'Brand check from'} <b>${escapeHtml(it.raw_name||'?')}</b> (${escapeHtml(pl.date||'')}) — who is this?</span>
           <select data-sync-pick="${it.id}"><option value="">Choose interpreter…</option>${cands.map(p=>`<option value="${p.id}">★ ${escapeHtml(p.name)}</option>`).join('')}${opts}</select>
           <button class="btn btn-primary" data-sync-resolve="${it.id}">Apply</button>
+          <button class="btn" data-sync-dismiss="${it.id}">Dismiss</button></div>`;
+      }
+      if(it.kind==='coaching_unclear'){
+        return `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px;font-size:13px;">
+          <span><b>${escapeHtml(pl.qar||'')}</b> mentions a coaching point the app couldn’t match to a criteria item: <i>“…${escapeHtml(pl.excerpt||'')}”</i>. Add it in the sheet notes using the criteria name.</span>
           <button class="btn" data-sync-dismiss="${it.id}">Dismiss</button></div>`;
       }
       const p = roster.find(x=>x.id===pl.interpreterId);
@@ -4164,6 +4472,12 @@ async function markReviewResolved(id){
 async function resolveUnmatched(itemId, interpId){
   const it = syncReviewItems.find(x=>x.id===itemId); if(!it||!interpId) return;
   const pl = it.payload||{};
+  if(it.source && it.source!=='brand_check'){
+    // Just remember the spelling; the next sheet sync (within about a minute) applies the QAR.
+    const al = (await storageGet('name-aliases')) || {};
+    al[syncNorm(it.raw_name)] = interpId; await storageSet('name-aliases', al);
+    await markReviewResolved(itemId); showToast('Remembered — it will appear after the next sync'); requestRealtimeRefresh(); return;
+  }
   let newPath = '';
   if(pl.imagePath){
     newPath = `${interpId}/${pl.date}/brandCheck/${Date.now()}_${Math.random().toString(36).slice(2,8)}.jpg`;
