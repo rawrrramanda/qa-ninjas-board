@@ -421,6 +421,9 @@
   .prof-trend-stack{display:flex;flex-direction:column;justify-content:flex-end;height:72px;width:22px;}
   .prof-trend-v{background:#D9695A;border-radius:0 0 4px 4px;} .prof-trend-c{background:#6FA3A8;border-radius:4px 4px 0 0;}
   .prof-trend-n{font-size:11px;color:var(--ink-soft);height:14px;} .prof-trend-l{font-size:10.5px;color:var(--ink-faint);margin-top:3px;white-space:nowrap;}
+  .prof-tier-high{background:#DDF1E4;color:#237A45;} .prof-tier-std{background:#FFF1B8;color:#7A5C00;}
+  .prof-tier-risk{background:#FAD1CC;color:#A5382B;} .prof-tier-critical{background:#FFD9B0;color:#9A4A00;}
+  .prof-tier-intensive{background:#E5271B;color:#fff;} .prof-tier-new{background:#DCEBF7;color:#2B5F8A;} .prof-tier-none{background:#EEE;color:#777;}
 </style>
 </head>
 <body>
@@ -2774,8 +2777,10 @@ function monthLabel(ym){ const [y,m] = ym.split('-').map(Number); return new Dat
 const fmtNum = (n, d=2) => (n===null || n===undefined || n==='') ? '—' : Number(n).toFixed(d);
 const fmtInt = n => (n===null || n===undefined || n==='') ? '—' : String(n);
 function tierBadge(t){
-  if(!t) return '<span class="prof-tier prof-tier-none">No tier</span>';
-  const k = /high/i.test(t) ? 'high' : /improv|low|watch/i.test(t) ? 'low' : 'std';
+  t = String(t||'').trim();
+  if(!t || /^[\d.\s]+$/.test(t)) return '<span class="prof-tier prof-tier-none">No tier</span>'; // blank or a stray number in the sheet
+  const k = /intensive/i.test(t) ? 'intensive' : /critical/i.test(t) ? 'critical' : /at.?risk/i.test(t) ? 'risk'
+          : /high/i.test(t) ? 'high' : /new/i.test(t) ? 'new' : /standard/i.test(t) ? 'std' : 'none';
   return `<span class="prof-tier prof-tier-${k}">${escapeHtml(t)}</span>`;
 }
 function scoreClass(s){ if(s===null||s===undefined) return ''; return s >= 90 ? 'prof-good' : s >= 85 ? 'prof-mid' : 'prof-bad'; }
