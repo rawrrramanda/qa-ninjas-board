@@ -1520,6 +1520,7 @@ async function renderToday(main){
       <input type="text" id="todaySearch" placeholder="Search interpreter…" value="${escapeAttr(todaySearchQuery)}" style="margin-left:8px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);font-size:13px;width:180px;">
     </div>
 
+    ${renderSyncReviewPanel()}
     <div class="stat-row">
       ${STATUSES.map(s=>`
         <div class="stat-chip"><div class="n">${counts[s.code]||0}</div><div class="l">${s.label}</div></div>
@@ -3876,7 +3877,7 @@ async function toggleDeafen(){
 let managersList = [];   // all manager profiles, fetched from the `managers` table
 let authenticated = false;
 
-function managerName(id){ return (managersList.find(m=>m.user_id===id)?.name) || 'Unassigned'; }
+function managerName(id){ if(id==='form') return 'Brand check form'; return (managersList.find(m=>m.user_id===id)?.name) || 'Unassigned'; }
 function currentManagerRecord(){ return managersList.find(m=>m.user_id===currentManagerId) || null; }
 
 async function loadManagersList(){
@@ -4122,12 +4123,100 @@ function handleReactionChange(payload){
   if(currentView === 'chat' && visible) refreshChatLight();
 }
 
+
+/* ================= Sheet-sync review queue ================= */
+let syncReviewItems = [];
+// Must stay identical to norm() in supabase-functions/sheet-sync/match.mjs
+function syncNorm(s){ return String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9\s]/g,' ').replace(/\s+/g,' ').trim(); }
+async function loadSyncReview(){
+  try{
+    const { data, error } = await supabaseClient.from('sync_review').select('*').eq('resolved', false).order('created_at');
+    if(!error) syncReviewItems = data || [];
+  }catch(e){ console.error('sync review load failed', e); }
+}
+function renderSyncReviewPanel(){
+  if(!syncReviewItems.length) return '';
+  const opts = roster.filter(p=>p.active!==false).map(p=>`<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
+  return `<div class="panel" style="padding:12px 14px;margin-bottom:12px;border-left:3px solid var(--status-unsure, #d89b00);">
+    <div style="font-weight:600;margin-bottom:8px;">Needs your review (${syncReviewItems.length})</div>
+    ${syncReviewItems.map(it=>{
+      const pl = it.payload||{};
+      if(it.kind==='unmatched_name'){
+        const cands = (it.candidates||[]).map(id=>roster.find(p=>p.id===id)).filter(Boolean);
+        return `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px;font-size:13px;">
+          <span>Brand check from <b>${escapeHtml(it.raw_name||'?')}</b> (${escapeHtml(pl.date||'')}) — who is this?</span>
+          <select data-sync-pick="${it.id}"><option value="">Choose interpreter…</option>${cands.map(p=>`<option value="${p.id}">★ ${escapeHtml(p.name)}</option>`).join('')}${opts}</select>
+          <button class="btn btn-primary" data-sync-resolve="${it.id}">Apply</button>
+          <button class="btn" data-sync-dismiss="${it.id}">Dismiss</button></div>`;
+      }
+      const p = roster.find(x=>x.id===pl.interpreterId);
+      return `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px;font-size:13px;">
+        <span><b>${escapeHtml(p?p.name:it.raw_name)}</b> submitted a brand check on ${escapeHtml(pl.date||'')} but is marked <b>${escapeHtml(pl.prior||'?')}</b>. Status was left unchanged.</span>
+        <button class="btn" data-sync-setpresent="${it.id}">Mark Present</button>
+        <button class="btn" data-sync-dismiss="${it.id}">Keep as is</button></div>`;
+    }).join('')}
+  </div>`;
+}
+async function markReviewResolved(id){
+  await supabaseClient.from('sync_review').update({ resolved:true, resolved_by:currentManagerId, resolved_at:new Date().toISOString() }).eq('id', id);
+  syncReviewItems = syncReviewItems.filter(x=>x.id!==id);
+}
+async function resolveUnmatched(itemId, interpId){
+  const it = syncReviewItems.find(x=>x.id===itemId); if(!it||!interpId) return;
+  const pl = it.payload||{};
+  let newPath = '';
+  if(pl.imagePath){
+    newPath = `${interpId}/${pl.date}/brandCheck/${Date.now()}_${Math.random().toString(36).slice(2,8)}.jpg`;
+    const { error } = await supabaseClient.storage.from('screenshots').move(pl.imagePath, newPath);
+    if(error){ showToast('Could not move screenshot: '+error.message); return; }
+  }
+  await ensureDateLoaded(pl.date);
+  const latest = (await storageGet('attendance:'+pl.date)) || {};
+  attendanceCache[pl.date] = latest;
+  const e = latest[interpId] || {};
+  const prior = e.status;
+  if(newPath){ e.brandCheck = newPath; e.brandCheckBy = 'form'; e.brandCheckAt = pl.submittedAt; }
+  if(!prior || prior==='P' || e.autoOff){ e.status='P'; e.autoOff=false; }
+  if(pl.note && !(e.note||'').includes(pl.note)) e.note = ((e.note||'') + ((e.note)?'\n':'') + pl.note);
+  latest[interpId] = e; attendanceCache[pl.date] = latest;
+  await saveDate(pl.date, true, interpId);
+  const aliases = (await storageGet('name-aliases')) || {};
+  aliases[syncNorm(it.raw_name)] = interpId;   // remembered: next time this name matches automatically
+  await storageSet('name-aliases', aliases);
+  await markReviewResolved(itemId);
+  showToast('Applied & remembered');
+  requestRealtimeRefresh();
+}
+async function setPresentFromReview(itemId){
+  const it = syncReviewItems.find(x=>x.id===itemId); if(!it) return;
+  const pl = it.payload||{};
+  await ensureDateLoaded(pl.date);
+  const latest = (await storageGet('attendance:'+pl.date)) || {};
+  attendanceCache[pl.date] = latest;
+  latest[pl.interpreterId] = { ...(latest[pl.interpreterId]||{}), status:'P', autoOff:false };
+  await saveDate(pl.date, true, pl.interpreterId);
+  await markReviewResolved(itemId); requestRealtimeRefresh();
+}
+document.addEventListener('click', async ev=>{
+  const t = ev.target.closest('[data-sync-resolve],[data-sync-dismiss],[data-sync-setpresent]'); if(!t) return;
+  if(t.dataset.syncResolve){ const sel=document.querySelector(`[data-sync-pick="${t.dataset.syncResolve}"]`); if(!sel||!sel.value){ showToast('Choose an interpreter first'); return; } await resolveUnmatched(t.dataset.syncResolve, sel.value); }
+  else if(t.dataset.syncDismiss){ await markReviewResolved(t.dataset.syncDismiss); requestRealtimeRefresh(); }
+  else if(t.dataset.syncSetpresent){ await setPresentFromReview(t.dataset.syncSetpresent); }
+});
+
 function setupRealtimeSubscriptions(){
   if(realtimeChannelsActive) return;
   realtimeChannelsActive = true;
   supabaseClient
     .channel('kv_store_changes')
     .on('postgres_changes', { event: '*', schema: 'public', table: 'kv_store' }, handleKvStoreChange)
+    .subscribe();
+  supabaseClient
+    .channel('sync_review_changes')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'sync_review' }, async ()=>{
+      await loadSyncReview();
+      if(currentView === 'today') requestRealtimeRefresh();
+    })
     .subscribe();
   supabaseClient
     .channel('managers_changes')
@@ -4210,6 +4299,7 @@ async function completeSignIn(userId){
   await migrateAutoDnmeOnce();
   await loadRoster();
   await loadChannels();
+  await loadSyncReview();
   setupRealtimeSubscriptions();
   loading = false;
   render();
