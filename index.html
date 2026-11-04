@@ -436,7 +436,7 @@
   .od-h{font-weight:600;font-size:13.5px;margin-bottom:8px;} .od-h span{font-weight:400;font-size:12px;color:var(--ink-faint);margin-left:8px;}
   .od-row{display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-top:1px solid var(--border);font-size:13px;} .od-row:first-of-type{border-top:0;} .od-row span{color:var(--ink-soft);} .od-row b{font-family:'IBM Plex Mono';font-weight:500;} .od-row b em{font-style:normal;color:var(--ink-faint);font-size:11.5px;margin-left:8px;}
   .od-cmp{width:100%;border-collapse:collapse;font-size:13px;} .od-cmp th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--ink-soft);font-weight:500;padding:4px 6px 6px;} .od-cmp td{padding:6px;border-top:1px solid var(--border);} .od-cmp td+td{font-family:'IBM Plex Mono';} .od-cmp td:first-child{color:var(--ink-soft);}
-  .od-diff{color:#B3402F;font-weight:600;}
+  .od-note{color:var(--accent);font-size:11px;cursor:help;} .od-diff{color:#B3402F;font-weight:600;}
   .od-stack{display:flex;height:12px;border-radius:99px;overflow:hidden;margin:2px 0 10px;background:var(--border);} .od-stack i{display:block;height:100%;}
   .od-dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:8px;}
   .od-mini{display:inline-block;width:60px;height:6px;border-radius:99px;background:var(--border);margin-right:8px;vertical-align:middle;overflow:hidden;} .od-mini i{display:block;height:100%;background:var(--status-present);}
@@ -1893,20 +1893,37 @@ async function renderOverallDashboard(){
   const val = v => (v===undefined || v==='' || v===null) ? '—' : escapeHtml(v);
   const rows = (obj, only) => Object.entries(obj||{}).filter(([k])=>!only || only.includes(k)).map(([k,v])=>`<div class="od-row"><span>${escapeHtml(k)}</span><b>${val(v)}</b></div>`).join('');
   const card = (title, body, sub) => body ? `<div class="od-card"><div class="od-h">${escapeHtml(title)}${sub?`<span>${escapeHtml(sub)}</span>`:''}</div>${body}</div>` : '';
-  const I = doc.internal || {}, S2 = doc.sisense || {}, H = doc.headcount || {}, O = doc.overall || {}, C = doc.coaching || {};
+  const I = Object.assign({}, doc.internal), S2 = doc.sisense || {}, H = doc.headcount || {}, O = Object.assign({}, doc.overall), C = doc.coaching || {};
+  // Crosscheck: the app's own QAR count (from the QAR rows) wins over the tracker's formulas; the sheet's figure is kept for the tooltip.
+  const sheetVals = {};
+  const qIdx = await loadQarIndex(ym);
+  if(qIdx){
+    const ids = Object.keys(qIdx); let total = 0, sum = 0, n = 0;
+    ids.forEach(id=>{ total += qIdx[id].count; sum += qIdx[id].sum; n += qIdx[id].n; });
+    const set = (obj, k, v) => { if(obj[k] !== undefined && String(obj[k]) !== String(v)) sheetVals[k] = obj[k]; obj[k] = String(v); };
+    set(I, 'Total QARs', total); set(I, 'Interpreters Monitored', ids.filter(id=>qIdx[id].count>0).length);
+    if(n) set(I, 'Overall Average Score', (sum/n).toFixed(2));
+    const stats = await loadProfileDoc('pstats', ym);
+    if(stats){
+      let needed = 0, any = false;
+      Object.entries(stats).forEach(([id, st])=>{ if(st && st.targetMtd != null){ any = true; needed += Math.max(0, st.targetMtd - ((qIdx[id]||{}).count||0)); } });
+      if(any) set(O, 'Needed to meet Individual Targets MTD', needed);
+    }
+  }
+  const tip = k => sheetVals[k] !== undefined ? ` title="Tracker sheet says ${escapeAttr(sheetVals[k])}"` : '';
   const qarsDone = num(I['Total QARs']), qarsTarget = num(O['QARs Target MTD']), eom = num(O['EOM Required Target']);
   const pctT = qarsTarget ? Math.min(100, Math.round((qarsDone||0)/qarsTarget*100)) : null;
   const avg = num(I['Overall Average Score']);
-  const kpi = (label, big, sub, cls, bar) => `<div class="od-kpi"><div class="l">${escapeHtml(label)}</div><div class="n ${cls||''}">${big}</div>${bar!=null?`<div class="prof-bar"><div style="width:${bar}%;"></div></div>`:''}<div class="s">${sub||''}</div></div>`;
+  const kpi = (label, big, sub, cls, bar, t) => `<div class="od-kpi"${t||''}><div class="l">${escapeHtml(label)}</div><div class="n ${cls||''}">${big}</div>${bar!=null?`<div class="prof-bar"><div style="width:${bar}%;"></div></div>`:''}<div class="s">${sub||''}</div></div>`;
   const kpis = `<div class="od-kpis">
     ${kpi('Active interpreters', val(H['Total Active MTD']), `${val(H['Full-timers'])} full-time · ${val(H['Part-timers'])} part-time`)}
-    ${kpi('QARs this month', `${val(I['Total QARs'])}<small> / ${val(O['QARs Target MTD'])} target</small>`, `${eom ? `End-of-month target ${eom}` : ''}${O['Needed to meet Individual Targets MTD'] ? ` · ${escapeHtml(O['Needed to meet Individual Targets MTD'])} still needed` : ''}`, '', pctT)}
-    ${kpi('Average QA score', avg==null ? '—' : fmtNum(avg), `${I['Interpreters Monitored'] ? escapeHtml(I['Interpreters Monitored']) + ' interpreters monitored' : ''}`, scoreClass(avg))}
+    ${kpi('QARs this month', `${val(I['Total QARs'])}<small> / ${val(O['QARs Target MTD'])} target</small>`, `${eom ? `End-of-month target ${eom}` : ''}${O['Needed to meet Individual Targets MTD'] ? ` · ${escapeHtml(O['Needed to meet Individual Targets MTD'])} still needed` : ''}`, '', pctT, tip('Total QARs'))}
+    ${kpi('Average QA score', avg==null ? '—' : fmtNum(avg), `${I['Interpreters Monitored'] ? escapeHtml(I['Interpreters Monitored']) + ' interpreters monitored' : ''}`, scoreClass(avg), null, tip('Overall Average Score'))}
     ${kpi('Pending coaching', val(C['QARs Pending Coaching']), `${val(C['QARs Covered in Coaching'])} of ${val(C['QARs Required Coaching'])} QARs covered`)}
   </div>`;
   // internal vs Sisense side by side
   const labels = [...new Set([...Object.keys(I), ...Object.keys(S2)])];
-  const cmp = `<table class="od-cmp"><thead><tr><th></th><th>Tracker</th><th>Sisense</th></tr></thead><tbody>${labels.map(l=>{ const a = I[l], b = S2[l], diff = a!==undefined && b!==undefined && a!==b && /total|average/i.test(l); return `<tr><td>${escapeHtml(l)}</td><td>${val(a)}</td><td class="${diff?'od-diff':''}">${val(b)}</td></tr>`; }).join('')}</tbody></table>`;
+  const cmp = `<table class="od-cmp"><thead><tr><th></th><th>Tracker (app-checked)</th><th>Sisense</th></tr></thead><tbody>${labels.map(l=>{ const a = I[l], b = S2[l], diff = a!==undefined && b!==undefined && a!==b && /total|average/i.test(l); return `<tr><td>${escapeHtml(l)}</td><td${tip(l)}>${val(a)}${sheetVals[l]!==undefined?' <span class="od-note">*</span>':''}</td><td class="${diff?'od-diff':''}">${val(b)}</td></tr>`; }).join('')}</tbody></table>`;
   // tiers: one stacked bar + legend
   const TIER_COL = { high:'#4CAF72', std:'#F2C230', risk:'#EE8A80', critical:'#F4A24A', intensive:'#E5271B', new:'#7FB0D8', none:'#CCC' };
   const tierKey = t => /intensive/i.test(t)?'intensive':/critical/i.test(t)?'critical':/at.?risk/i.test(t)?'risk':/high/i.test(t)?'high':/new/i.test(t)?'new':/standard/i.test(t)?'std':'none';
@@ -2851,7 +2868,7 @@ async function loadQarIndex(ym){
   const out = {};
   for(const [id, m] of Object.entries(per)){
     const list = Object.values(m); const sc = list.map(o => o.s ?? o.f).filter(n => n != null);
-    out[id] = { count: list.length, avg: sc.length ? sc.reduce((a,b)=>a+b,0)/sc.length : null };
+    const sum = sc.reduce((a,b)=>a+b,0); out[id] = { count: list.length, avg: sc.length ? sum/sc.length : null, sum, n: sc.length };
   }
   return out;
 }
@@ -2981,7 +2998,8 @@ async function renderPerfProfile(main){
     loadProfileDoc('pcoach', currentMonth), loadProfileDoc('pplans', currentMonth), loadProfileDoc('peq', currentMonth),
     loadProfileDoc('pcal', currentMonth), loadProfileDoc('pcompl', '')
   ]);
-  const qIdx = await loadQarIndex(currentMonth);
+  const qIdxs = await Promise.all(hist.map(m=>loadQarIndex(m)));
+  const qIdx = qIdxs[0];
   await ensureViolationsLoadedFor([p.id]);
   await ensureMonthLoaded(currentMonth);
 
@@ -3071,7 +3089,7 @@ async function renderPerfProfile(main){
 
     ${profSection('Performance tier history', `
       <table class="prof-list"><thead><tr><th>Month</th><th>Tier</th><th>EOM target</th><th>QARs</th><th>Avg QA</th><th>CSAT</th></tr></thead><tbody>
-        ${hist.map((m,i)=>{ const s = S[i]; return `<tr><td>${monthLabel(m)}</td><td>${s ? tierBadge(s.tier) : '—'}</td><td>${s ? fmtInt(s.eomTarget) : '—'}</td><td>${s ? fmtInt(s.qarsInternal ?? s.qarsSisense) : '—'}</td><td class="${scoreClass(s && (s.avgSisense ?? s.avgInternal))}">${s ? fmtNum(s.avgSisense ?? s.avgInternal) : '—'}</td><td>${s ? fmtNum(s.csatMtd) : '—'}</td></tr>`; }).join('')}
+        ${hist.map((m,i)=>{ const s = S[i]; const e = s ? effStats(s, p.id, qIdxs[i]) : null; return `<tr><td>${monthLabel(m)}</td><td>${s ? tierBadge(s.tier) : '—'}</td><td>${s ? fmtInt(s.eomTarget) : '—'}</td><td>${e ? fmtInt(e.count) : '—'}</td><td class="${scoreClass(e && e.avg)}">${e ? fmtNum(e.avg) : '—'}</td><td>${s ? fmtNum(s.csatMtd) : '—'}</td></tr>`; }).join('')}
       </tbody></table>`, 'last 6 months')}
 
     ${profSection('CSAT', `
