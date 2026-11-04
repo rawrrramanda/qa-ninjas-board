@@ -424,6 +424,22 @@
   .prof-tier-high{background:#DDF1E4;color:#237A45;} .prof-tier-std{background:#FFF1B8;color:#7A5C00;}
   .prof-tier-risk{background:#FAD1CC;color:#A5382B;} .prof-tier-critical{background:#FFD9B0;color:#9A4A00;}
   .prof-tier-intensive{background:#E5271B;color:#fff;} .prof-tier-new{background:#DCEBF7;color:#2B5F8A;} .prof-tier-none{background:#EEE;color:#777;}
+
+  /* Overall dashboard (Monthly Overview) */
+  details.od{margin-bottom:8px;} details.od>summary{cursor:pointer;list-style:none;margin:2px 2px 12px;display:flex;align-items:baseline;flex-wrap:wrap;gap:4px;} details.od>summary::-webkit-details-marker{display:none;}
+  .od-title{font-weight:600;font-size:16px;}
+  .od-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin-bottom:12px;}
+  .od-kpi{background:var(--bg-panel);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;box-shadow:var(--shadow);}
+  .od-kpi .l{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--ink-soft);} .od-kpi .n{font-family:'IBM Plex Mono';font-size:28px;font-weight:500;margin-top:4px;} .od-kpi .n small{font-size:13px;color:var(--ink-faint);font-weight:400;} .od-kpi .s{font-size:12px;color:var(--ink-soft);min-height:16px;}
+  .od-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:12px;align-items:start;} .od-col{display:flex;flex-direction:column;gap:12px;}
+  .od-card{background:var(--bg-panel);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;box-shadow:var(--shadow);}
+  .od-h{font-weight:600;font-size:13.5px;margin-bottom:8px;} .od-h span{font-weight:400;font-size:12px;color:var(--ink-faint);margin-left:8px;}
+  .od-row{display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-top:1px solid var(--border);font-size:13px;} .od-row:first-of-type{border-top:0;} .od-row span{color:var(--ink-soft);} .od-row b{font-family:'IBM Plex Mono';font-weight:500;} .od-row b em{font-style:normal;color:var(--ink-faint);font-size:11.5px;margin-left:8px;}
+  .od-cmp{width:100%;border-collapse:collapse;font-size:13px;} .od-cmp th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--ink-soft);font-weight:500;padding:4px 6px 6px;} .od-cmp td{padding:6px;border-top:1px solid var(--border);} .od-cmp td+td{font-family:'IBM Plex Mono';} .od-cmp td:first-child{color:var(--ink-soft);}
+  .od-diff{color:#B3402F;font-weight:600;}
+  .od-stack{display:flex;height:12px;border-radius:99px;overflow:hidden;margin:2px 0 10px;background:var(--border);} .od-stack i{display:block;height:100%;}
+  .od-dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:8px;}
+  .od-mini{display:inline-block;width:60px;height:6px;border-radius:99px;background:var(--border);margin-right:8px;vertical-align:middle;overflow:hidden;} .od-mini i{display:block;height:100%;background:var(--status-present);}
 </style>
 </head>
 <body>
@@ -1873,23 +1889,51 @@ async function renderOverallDashboard(){
     box.innerHTML = `<div class="panel" style="padding:12px 16px;margin-bottom:18px;font-size:13px;color:var(--ink-soft);">The Overall Dashboard for ${monthLabel(ym)} hasn’t synced from the tracker yet (it appears once the master workbook for that month is connected).</div>`;
     return;
   }
-  const chips = (obj, skip) => Object.entries(obj||{}).filter(([k,v])=>!(skip||[]).includes(k)).map(([k,v])=>profChip(k, escapeHtml(v===''?'—':v))).join('');
-  const sec = (title, body, sub) => body ? profSection(title, body, sub) : '';
-  const tierRows = (doc.tiers||[]).map(t=>`<tr><td>${tierBadge(t['Performance Level'])}</td><td>${escapeHtml(t['# of Interpreters']||'')}</td><td>${escapeHtml(t['% from Total Workforce']||'')}</td></tr>`).join('');
-  const tt = doc.tiersTotal;
-  const langRows = (doc.languages||[]).map(l=>{ const sc = parseFloat(l['Average QA Score']); return `<tr><td>${escapeHtml(l['Language']||'')}</td><td>${escapeHtml(l['Headcount']||'')}</td><td class="${isNaN(sc)?'':scoreClass(sc)}">${escapeHtml(l['Average QA Score']||'—')}</td></tr>`; }).join('');
-  const lt = doc.languagesTotal;
+  const num = v => { const n = parseFloat(String(v||'').replace(/[^0-9.\-]/g,'')); return isNaN(n) ? null : n; };
+  const val = v => (v===undefined || v==='' || v===null) ? '—' : escapeHtml(v);
+  const rows = (obj, only) => Object.entries(obj||{}).filter(([k])=>!only || only.includes(k)).map(([k,v])=>`<div class="od-row"><span>${escapeHtml(k)}</span><b>${val(v)}</b></div>`).join('');
+  const card = (title, body, sub) => body ? `<div class="od-card"><div class="od-h">${escapeHtml(title)}${sub?`<span>${escapeHtml(sub)}</span>`:''}</div>${body}</div>` : '';
+  const I = doc.internal || {}, S2 = doc.sisense || {}, H = doc.headcount || {}, O = doc.overall || {}, C = doc.coaching || {};
+  const qarsDone = num(I['Total QARs']), qarsTarget = num(O['QARs Target MTD']), eom = num(O['EOM Required Target']);
+  const pctT = qarsTarget ? Math.min(100, Math.round((qarsDone||0)/qarsTarget*100)) : null;
+  const avg = num(I['Overall Average Score']);
+  const kpi = (label, big, sub, cls, bar) => `<div class="od-kpi"><div class="l">${escapeHtml(label)}</div><div class="n ${cls||''}">${big}</div>${bar!=null?`<div class="prof-bar"><div style="width:${bar}%;"></div></div>`:''}<div class="s">${sub||''}</div></div>`;
+  const kpis = `<div class="od-kpis">
+    ${kpi('Active interpreters', val(H['Total Active MTD']), `${val(H['Full-timers'])} full-time · ${val(H['Part-timers'])} part-time`)}
+    ${kpi('QARs this month', `${val(I['Total QARs'])}<small> / ${val(O['QARs Target MTD'])} target</small>`, `${eom ? `End-of-month target ${eom}` : ''}${O['Needed to meet Individual Targets MTD'] ? ` · ${escapeHtml(O['Needed to meet Individual Targets MTD'])} still needed` : ''}`, '', pctT)}
+    ${kpi('Average QA score', avg==null ? '—' : fmtNum(avg), `${I['Interpreters Monitored'] ? escapeHtml(I['Interpreters Monitored']) + ' interpreters monitored' : ''}`, scoreClass(avg))}
+    ${kpi('Pending coaching', val(C['QARs Pending Coaching']), `${val(C['QARs Covered in Coaching'])} of ${val(C['QARs Required Coaching'])} QARs covered`)}
+  </div>`;
+  // internal vs Sisense side by side
+  const labels = [...new Set([...Object.keys(I), ...Object.keys(S2)])];
+  const cmp = `<table class="od-cmp"><thead><tr><th></th><th>Tracker</th><th>Sisense</th></tr></thead><tbody>${labels.map(l=>{ const a = I[l], b = S2[l], diff = a!==undefined && b!==undefined && a!==b && /total|average/i.test(l); return `<tr><td>${escapeHtml(l)}</td><td>${val(a)}</td><td class="${diff?'od-diff':''}">${val(b)}</td></tr>`; }).join('')}</tbody></table>`;
+  // tiers: one stacked bar + legend
+  const TIER_COL = { high:'#4CAF72', std:'#F2C230', risk:'#EE8A80', critical:'#F4A24A', intensive:'#E5271B', new:'#7FB0D8', none:'#CCC' };
+  const tierKey = t => /intensive/i.test(t)?'intensive':/critical/i.test(t)?'critical':/at.?risk/i.test(t)?'risk':/high/i.test(t)?'high':/new/i.test(t)?'new':/standard/i.test(t)?'std':'none';
+  const tiers = (doc.tiers||[]).map(t=>({ name:t['Performance Level']||'', n:num(t['# of Interpreters'])||0, pct:t['% from Total Workforce']||'' }));
+  const tTotal = tiers.reduce((a,t)=>a+t.n,0) || 1;
+  const tierBlock = tiers.length ? `<div class="od-stack">${tiers.filter(t=>t.n>0).map(t=>`<i style="width:${t.n/tTotal*100}%;background:${TIER_COL[tierKey(t.name)]};" title="${escapeAttr(t.name)}: ${t.n}"></i>`).join('')}</div>
+    ${tiers.map(t=>`<div class="od-row"><span><i class="od-dot" style="background:${TIER_COL[tierKey(t.name)]};"></i>${escapeHtml(t.name)}</span><b>${t.n}<em>${escapeHtml(t.pct)}</em></b></div>`).join('')}` : '';
+  // languages
+  const langs = (doc.languages||[]);
+  const maxHead = Math.max(1, ...langs.map(l=>num(l['Headcount'])||0));
+  const langBlock = langs.length ? `<table class="od-cmp"><thead><tr><th>Language</th><th>Headcount</th><th>Avg QA score</th></tr></thead><tbody>${langs.map(l=>{ const sc = num(l['Average QA Score']), h = num(l['Headcount'])||0; return `<tr><td>${escapeHtml(l['Language']||'')}</td><td><span class="od-mini"><i style="width:${h/maxHead*100}%"></i></span>${h}</td><td class="${sc==null?'':scoreClass(sc)}">${val(l['Average QA Score'])}</td></tr>`; }).join('')}</tbody></table>` : '';
   box.innerHTML = `
-    <div class="prof-h" style="margin:2px 2px 10px;font-size:15px;">Overall dashboard — ${escapeHtml(doc.title || monthLabel(ym))}<span class="prof-sub">from the tracker’s “# Overall Dashboard #” tab</span></div>
-    ${sec('Headcount', `<div class="stat-row">${chips(doc.headcount)}</div>`)}
-    ${sec('QAR targets', `<div class="stat-row">${chips(doc.overall)}</div>`)}
-    ${sec('QAR stats MTD — Internal (tracker)', `<div class="stat-row">${chips(doc.internal)}</div>`)}
-    ${sec('QAR stats MTD — Sisense', `<div class="stat-row">${chips(doc.sisense)}</div>`)}
-    ${sec('Coaching', `<div class="stat-row">${chips(doc.coaching)}</div>`)}
-    ${tierRows ? sec('Performance tiers — headcount distribution', `<table class="month-summary"><thead><tr><th>Performance level</th><th># of interpreters</th><th>% of workforce</th></tr></thead><tbody>${tierRows}${tt?`<tr><td><b>Total</b></td><td><b>${escapeHtml(tt['# of Interpreters']||'')}</b></td><td></td></tr>`:''}</tbody></table>`) : ''}
-    ${langRows ? sec('QA scores per language', `<table class="month-summary"><thead><tr><th>Language</th><th>Headcount</th><th>Average QA score</th></tr></thead><tbody>${langRows}${lt?`<tr><td><b>Total</b></td><td><b>${escapeHtml(lt['Headcount']||'')}</b></td><td><b>${escapeHtml(lt['Average QA Score']||'')}</b></td></tr>`:''}</tbody></table>`) : ''}
-    <div style="height:10px;"></div>
-    <div class="prof-h" style="margin:6px 2px 10px;font-size:15px;">Attendance</div>`;
+    <details class="od" open>
+      <summary><span class="od-title">Overall dashboard — ${escapeHtml(doc.title || monthLabel(ym))}</span><span class="prof-sub">from the tracker’s “# Overall Dashboard #” tab · click to collapse</span></summary>
+      ${kpis}
+      <div class="od-grid">
+        ${card('QAR stats — Tracker vs Sisense', cmp)}
+        <div class="od-col">
+          ${card('Performance tiers', tierBlock)}
+          ${card('Coaching', rows(C))}
+        </div>
+        ${card('Headcount', rows(H))}
+        ${card('Targets', rows(O))}
+        ${langBlock ? `<div style="grid-column:1/-1;">${card('QA scores per language', langBlock)}</div>` : ''}
+      </div>
+    </details>
+    <div class="prof-h" style="margin:22px 2px 10px;font-size:15px;">Attendance</div>`;
 }
 
 async function renderOverview(main){
