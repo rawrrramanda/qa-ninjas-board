@@ -2760,6 +2760,7 @@ function updateCoachingSummary(){
 /* ================= Interpreter profiles (Performance tab) ================= */
 let perfProfileId = null;
 let perfShowAllComplaints = false;
+let perfTeamFilter = null;    // null = follow viewFilter ('mine'/'all'); otherwise a manager's user_id or 'none' (unassigned)
 let perfLogScope = 'month';   // 'month' | 'all' — scope of the performance log in a profile
 const profileCache = {};   // 'pstats:2026-10' -> doc | null
 function profileKey(kind, ym){ return kind === 'pcompl' ? 'pcompl' : kind + ':' + ym; }
@@ -2808,7 +2809,14 @@ async function renderPerformance(main){
 /* ---- List of interpreters ---- */
 async function renderPerfList(main){
   const allActive = roster.filter(p=>p.active !== false);
-  const scope = viewFilter === 'mine' ? allActive.filter(p=>p.managerId === currentManagerId) : allActive;
+  const team = perfTeamFilter || viewFilter;            // 'mine' | 'all' | manager user_id | 'none'
+  const knownIds = new Set(managersList.map(m=>m.user_id));
+  const scope = team === 'mine' ? allActive.filter(p=>p.managerId === currentManagerId)
+              : team === 'all' ? allActive
+              : team === 'none' ? allActive.filter(p=>!knownIds.has(p.managerId))
+              : allActive.filter(p=>p.managerId === team);
+  const otherTeams = managersList.filter(m=>m.user_id !== currentManagerId).map(m=>({ id:m.user_id, name:m.name, n:allActive.filter(p=>p.managerId===m.user_id).length })).filter(t=>t.n>0);
+  const noneCount = allActive.filter(p=>!knownIds.has(p.managerId)).length;
   const lm = monthsBack(currentMonth, 3);                        // selected month, then up to 2 earlier
   const statDocs = await Promise.all(lm.map(m=>loadProfileDoc('pstats', m)));
   const csat = await loadProfileDoc('pcsat', currentMonth);
@@ -2826,8 +2834,10 @@ async function renderPerfList(main){
       </div>
     </div>
     <div class="date-nav" style="margin-bottom:16px;">
-      <button class="btn btn-sm ${viewFilter==='mine'?'btn-primary':''}" data-filter="mine">My team</button>
-      <button class="btn btn-sm ${viewFilter==='all'?'btn-primary':''}" data-filter="all">All teams</button>
+      <button class="btn btn-sm ${team==='mine'?'btn-primary':''}" data-team="mine">My team</button>
+      <button class="btn btn-sm ${team==='all'?'btn-primary':''}" data-team="all">All teams</button>
+      ${otherTeams.map(t=>`<button class="btn btn-sm ${team===t.id?'btn-primary':''}" data-team="${t.id}">${escapeHtml(t.name)}’s team (${t.n})</button>`).join('')}
+      ${noneCount ? `<button class="btn btn-sm ${team==='none'?'btn-primary':''}" data-team="none">Unassigned (${noneCount})</button>` : ''}
       <input type="text" id="perfSearch" placeholder="Search interpreter…" value="${escapeAttr(window.__perfSearch||'')}" style="margin-left:8px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);font-size:13px;">
     </div>
     <div id="perfFallbackNote"></div>
@@ -2857,7 +2867,7 @@ async function renderPerfList(main){
   { const note = document.getElementById('perfFallbackNote'); if(note && (usedOlder || !stats)) note.innerHTML = `<div class="panel" style="padding:10px 14px;margin-bottom:14px;font-size:13px;color:var(--ink-soft);">${monthLabel(currentMonth)} doesn’t have numbers yet${usedOlder ? ' — greyed rows show the latest earlier month that does (labelled)' : ''}. Pick an earlier month above to see it in full.</div>`; }
   document.getElementById('perfMonthPick').addEventListener('change', e=>{ currentMonth = e.target.value; refresh(); });
   document.getElementById('perfExportCsv').addEventListener('click', async ()=>{ await ensureViolationsLoadedFor(allActive.map(p=>p.id)); exportPerformanceCsv(); });
-  main.querySelectorAll('[data-filter]').forEach(b=>b.addEventListener('click', ()=>{ viewFilter = b.dataset.filter; refresh(); }));
+  main.querySelectorAll('[data-team]').forEach(b=>b.addEventListener('click', ()=>{ perfTeamFilter = b.dataset.team; refresh(); }));
   const si = document.getElementById('perfSearch');
   si.addEventListener('input', ()=>{ window.__perfSearch = si.value; const pos = si.selectionStart; refresh(); setTimeout(()=>{ const n = document.getElementById('perfSearch'); if(n){ n.focus(); n.setSelectionRange(pos,pos); } }, 30); });
   main.querySelectorAll('[data-open-profile]').forEach(tr=>tr.addEventListener('click', ()=>{ perfProfileId = tr.dataset.openProfile; perfShowAllComplaints = false; refresh(); }));
