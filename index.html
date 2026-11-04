@@ -1945,18 +1945,11 @@ async function renderOverview(main){
         <button class="btn btn-sm" id="exportCsv">Export CSV</button>
       </div>
     </div>
-    <div class="date-nav" style="margin-bottom:16px;">
-      <button class="btn btn-sm ${viewFilter==='mine'?'btn-primary':''}" data-filter="mine">My team</button>
-      <button class="btn btn-sm ${viewFilter==='all'?'btn-primary':''}" data-filter="all">All teams</button>
-    </div>
     <div id="overallDashboard"></div>
     <div id="overviewBody"><div class="spinner-line">Loading month…</div></div>
   `;
   document.getElementById('monthPick').addEventListener('change', e=>{ currentMonth = e.target.value; refresh(); });
   document.getElementById('exportCsv').addEventListener('click', exportMonthCsv);
-  document.querySelectorAll('[data-filter]').forEach(btn=>{
-    btn.addEventListener('click', ()=>{ viewFilter = btn.dataset.filter; refresh(); });
-  });
 
   renderOverallDashboard();   // fills #overallDashboard from the sheet's '# Overall Dashboard #' tab (async, independent of attendance)
   await ensureMonthLoaded(currentMonth);
@@ -1965,11 +1958,11 @@ async function renderOverview(main){
   const todayYm = todayStr().slice(0,7);
   const lastDay = (currentMonth === todayYm) ? Number(todayStr().slice(8,10)) : n;
 
-  const rosterInScope = viewFilter === 'mine' ? roster.filter(p=>p.managerId === currentManagerId) : roster;
+  const rosterInScope = roster;   // Monthly Overview always covers every team
 
   // gather ids: roster (in scope) + any id seen in data this month that's in scope
   const idSet = new Set(rosterInScope.map(p=>p.id));
-  if(viewFilter === 'all'){
+  {
     for(let d=1; d<=lastDay; d++){
       const ds = currentMonth + '-' + pad(d);
       const day = attendanceCache[ds] || {};
@@ -1992,7 +1985,7 @@ async function renderOverview(main){
 
   const body = document.getElementById('overviewBody');
   if(ids.length === 0){
-    body.innerHTML = `<div class="panel"><div class="empty-state"><div class="big">Nothing logged yet</div><div>${viewFilter==='mine' ? 'No interpreters assigned to you, or nothing recorded for this month.' : 'No attendance recorded for this month.'}</div></div></div>`;
+    body.innerHTML = `<div class="panel"><div class="empty-state"><div class="big">Nothing logged yet</div><div>No attendance recorded for this month.</div></div></div>`;
     return;
   }
 
@@ -2043,13 +2036,12 @@ async function renderOverview(main){
       </div>
     </div>
 
-    ${await renderPerformanceOverviewPanel(ids)}
   `;
 }
 
 // Builds the "Performance overview" panel for Monthly Overview: total flags
 // this month, a top-4 flagged-violation chart, and per-interpreter flag counts.
-async function renderPerformanceOverviewPanel(ids){
+async function renderPerformanceOverviewPanel(ids, teamLabel){
   await ensureViolationsLoadedFor(ids);
   const nameOf = id => (roster.find(p=>p.id===id)?.name) || '(removed)';
 
@@ -2079,7 +2071,7 @@ async function renderPerformanceOverviewPanel(ids){
   if(totalFlags === 0){
     return `
       <div class="panel" style="padding:18px 20px;margin-top:22px;">
-        <div style="font-family:'Space Grotesk';font-size:14px;font-weight:600;margin-bottom:4px;">Performance overview</div>
+        <div style="font-family:'Space Grotesk';font-size:14px;font-weight:600;margin-bottom:4px;">Performance overview${teamLabel ? ' — '+escapeHtml(teamLabel) : ''}</div>
         <div class="hint">No violations flagged for this team in ${currentMonth}.</div>
       </div>
     `;
@@ -2087,7 +2079,7 @@ async function renderPerformanceOverviewPanel(ids){
 
   return `
     <div class="panel" style="padding:18px 20px;margin-top:22px;">
-      <div style="font-family:'Space Grotesk';font-size:14px;font-weight:600;margin-bottom:14px;">Performance overview</div>
+      <div style="font-family:'Space Grotesk';font-size:14px;font-weight:600;margin-bottom:14px;">Performance overview${teamLabel ? ' — '+escapeHtml(teamLabel) : ''}</div>
 
       <div class="stat-row" style="margin-bottom:20px;">
         <div class="stat-chip"><div class="n">${totalFlags}</div><div class="l">Total flags</div></div>
@@ -2964,7 +2956,11 @@ async function renderPerfList(main){
           }).join('')}
         </tbody>
       </table>`}
-    </div>`;
+    </div>
+    <div id="perfTeamOverview"></div>`;
+  { const teamLabel = team === 'mine' ? 'My team' : team === 'all' ? 'All teams' : team === 'none' ? 'Unassigned' : ((managersList.find(m=>m.user_id===team)||{}).name || 'Team') + '’s team';
+    const ovIds = scope.map(p=>p.id);
+    renderPerformanceOverviewPanel(ovIds, teamLabel).then(h=>{ const el = document.getElementById('perfTeamOverview'); if(el) el.innerHTML = h; }); }
   { const note = document.getElementById('perfFallbackNote'); if(note && (usedOlder || !stats)) note.innerHTML = `<div class="panel" style="padding:10px 14px;margin-bottom:14px;font-size:13px;color:var(--ink-soft);">${monthLabel(currentMonth)} doesn’t have numbers yet${usedOlder ? ' — greyed rows show the latest earlier month that does (labelled)' : ''}. Pick an earlier month above to see it in full.</div>`; }
   document.getElementById('perfMonthPick').addEventListener('change', e=>{ currentMonth = e.target.value; refresh(); });
   document.getElementById('perfExportCsv').addEventListener('click', async ()=>{ await ensureViolationsLoadedFor(allActive.map(p=>p.id)); exportPerformanceCsv(); });
