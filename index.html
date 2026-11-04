@@ -2783,6 +2783,8 @@ function tierBadge(t){
           : /high/i.test(t) ? 'high' : /new/i.test(t) ? 'new' : /standard/i.test(t) ? 'std' : 'none';
   return `<span class="prof-tier prof-tier-${k}">${escapeHtml(t)}</span>`;
 }
+// A stats row counts as "real" once it has a tier, a QAR count or a score (a new month starts out blank).
+const hasStats = s => !!s && (!!String(s.tier||'').trim() && !/^[\d.\s]+$/.test(String(s.tier)) || s.qarsInternal != null || s.qarsSisense != null || s.avgInternal != null || s.avgSisense != null);
 function scoreClass(s){ if(s===null||s===undefined) return ''; return s >= 90 ? 'prof-good' : s >= 85 ? 'prof-mid' : 'prof-bad'; }
 function itemTags(items, type){
   const list = (items||[]).filter(it => (it.pointType||'violation') === type);
@@ -2807,7 +2809,12 @@ async function renderPerformance(main){
 async function renderPerfList(main){
   const allActive = roster.filter(p=>p.active !== false);
   const scope = viewFilter === 'mine' ? allActive.filter(p=>p.managerId === currentManagerId) : allActive;
-  const [stats, csat] = await Promise.all([loadProfileDoc('pstats', currentMonth), loadProfileDoc('pcsat', currentMonth)]);
+  const lm = monthsBack(currentMonth, 3);                        // selected month, then up to 2 earlier
+  const statDocs = await Promise.all(lm.map(m=>loadProfileDoc('pstats', m)));
+  const csat = await loadProfileDoc('pcsat', currentMonth);
+  const stats = statDocs[0];
+  const pick = id => { for(let i=0;i<statDocs.length;i++){ const s = statDocs[i] && statDocs[i][id]; if(hasStats(s)) return { s, month: lm[i], old: i > 0 }; } return { s: null, month: null, old: false }; };
+  let usedOlder = false;
   const search = (window.__perfSearch || '').toLowerCase();
   const rows = scope.filter(p=>!search || p.name.toLowerCase().includes(search)).sort((a,b)=>a.name.localeCompare(b.name));
   main.innerHTML = `
@@ -2823,29 +2830,31 @@ async function renderPerfList(main){
       <button class="btn btn-sm ${viewFilter==='all'?'btn-primary':''}" data-filter="all">All teams</button>
       <input type="text" id="perfSearch" placeholder="Search interpreter…" value="${escapeAttr(window.__perfSearch||'')}" style="margin-left:8px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);font-size:13px;">
     </div>
-    ${!stats ? `<div class="panel" style="padding:10px 14px;margin-bottom:14px;font-size:13px;color:var(--ink-soft);">No synced performance data for ${monthLabel(currentMonth)} yet. Details appear once the master sheet for that month has synced.</div>` : ''}
+    <div id="perfFallbackNote"></div>
     <div class="panel">
       ${rows.length === 0 ? `<div class="empty-state"><div class="big">No interpreters to show</div></div>` : `
       <table class="prof-list">
         <thead><tr><th>Interpreter</th><th>Tier</th><th>QARs</th><th>Avg QA score</th><th>CSAT</th><th>Pending coaching</th></tr></thead>
         <tbody>
           ${rows.map(p=>{
-            const s = stats && stats[p.id]; const c = csat && csat[p.id];
+            const pk = pick(p.id); const s = pk.s; const c = csat && csat[p.id]; if(pk.old) usedOlder = true;
+            const dim = pk.old ? 'opacity:.6;' : ''; const tag = pk.old ? `<div class="interp-role">${monthLabel(pk.month).split(' ')[0]}</div>` : '';
             const qa = s ? (s.avgSisense ?? s.avgInternal) : null;
             const cs = s && s.csatMtd != null ? s.csatMtd : (c ? c.final : null);
             const cur = s ? (s.qarsInternal ?? s.qarsSisense) : null;
             return `<tr class="prof-row" data-open-profile="${p.id}" style="cursor:pointer;">
               <td><div class="interp-name">${escapeHtml(p.name)}</div><div class="interp-role">${escapeHtml(p.language||'')} · ${escapeHtml(managerName(p.managerId))}</div></td>
-              <td>${s ? tierBadge(s.tier) : '—'}</td>
-              <td>${s ? `${fmtInt(cur)} / ${fmtInt(s.eomTarget)}${s.needed ? `<div class="interp-role">${s.needed} more to MTD</div>` : ''}` : '—'}</td>
-              <td class="${scoreClass(qa)}">${fmtNum(qa)}</td>
-              <td>${fmtNum(cs)}</td>
-              <td>${s && s.coachPending ? `<span class="prof-tag prof-tag-coaching">${s.coachPending}</span>` : (s ? '0' : '—')}</td>
+              <td style="${dim}">${s ? tierBadge(s.tier) : '—'}${tag}</td>
+              <td style="${dim}">${s ? `${fmtInt(cur)} / ${fmtInt(s.eomTarget)}${s.needed ? `<div class="interp-role">${s.needed} more to MTD</div>` : ''}` : '—'}</td>
+              <td class="${scoreClass(qa)}" style="${dim}">${fmtNum(qa)}</td>
+              <td style="${dim}">${fmtNum(cs)}</td>
+              <td style="${dim}">${s && s.coachPending ? `<span class="prof-tag prof-tag-coaching">${s.coachPending}</span>` : (s ? '0' : '—')}</td>
             </tr>`;
           }).join('')}
         </tbody>
       </table>`}
     </div>`;
+  { const note = document.getElementById('perfFallbackNote'); if(note && (usedOlder || !stats)) note.innerHTML = `<div class="panel" style="padding:10px 14px;margin-bottom:14px;font-size:13px;color:var(--ink-soft);">${monthLabel(currentMonth)} doesn’t have numbers yet${usedOlder ? ' — greyed rows show the latest earlier month that does (labelled)' : ''}. Pick an earlier month above to see it in full.</div>`; }
   document.getElementById('perfMonthPick').addEventListener('change', e=>{ currentMonth = e.target.value; refresh(); });
   document.getElementById('perfExportCsv').addEventListener('click', async ()=>{ await ensureViolationsLoadedFor(allActive.map(p=>p.id)); exportPerformanceCsv(); });
   main.querySelectorAll('[data-filter]').forEach(b=>b.addEventListener('click', ()=>{ viewFilter = b.dataset.filter; refresh(); }));
@@ -2869,7 +2878,9 @@ async function renderPerfProfile(main){
   await ensureMonthLoaded(currentMonth);
 
   const S = statsDocs.map(d=>d && d[p.id] || null);
-  const cur = S[0] || S.find(Boolean) || null;           // details fall back to the latest month that has data
+  let curIdx = S.findIndex(hasStats); if(curIdx < 0) curIdx = S.findIndex(Boolean);
+  const cur = curIdx >= 0 ? S[curIdx] : null;           // details + targets come from the latest month that has real data
+  const curMonth = curIdx >= 0 ? hist[curIdx] : currentMonth;
   const C = csatDocs.map(d=>d && d[p.id] || null);
 
   // ---- brand checks for the month
@@ -2947,7 +2958,7 @@ async function renderPerfProfile(main){
         ${profChip('Current CSAT', fmtNum(d.csatMtd))}
       </div>
       ${d.eomTarget ? `<div class="prof-bar"><div style="width:${pct}%;"></div></div><div class="interp-role">${pct}% of end-of-month target · weekly target ${fmtInt(d.weeklyTarget)}${d.lastQarDate ? ' · last QAR '+d.lastQarDate : ''}</div>` : ''}
-    `, monthLabel(currentMonth))}
+    `, curMonth === currentMonth ? monthLabel(currentMonth) : `${monthLabel(curMonth)} (latest with data)`)}
 
     ${profSection('Performance tier history', `
       <table class="prof-list"><thead><tr><th>Month</th><th>Tier</th><th>EOM target</th><th>QARs</th><th>Avg QA</th><th>CSAT</th></tr></thead><tbody>
