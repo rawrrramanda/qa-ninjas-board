@@ -1864,6 +1864,34 @@ Only these people will show up in Today's Log."></textarea>
 }
 
 /* ================= Overview view ================= */
+async function renderOverallDashboard(){
+  const box = document.getElementById('overallDashboard'); if(!box) return;
+  const ym = currentMonth;
+  const doc = await loadProfileDoc('pdash', ym);
+  if(!document.getElementById('overallDashboard') || ym !== currentMonth) return;
+  if(!doc){
+    box.innerHTML = `<div class="panel" style="padding:12px 16px;margin-bottom:18px;font-size:13px;color:var(--ink-soft);">The Overall Dashboard for ${monthLabel(ym)} hasn’t synced from the tracker yet (it appears once the master workbook for that month is connected).</div>`;
+    return;
+  }
+  const chips = (obj, skip) => Object.entries(obj||{}).filter(([k,v])=>!(skip||[]).includes(k)).map(([k,v])=>profChip(k, escapeHtml(v===''?'—':v))).join('');
+  const sec = (title, body, sub) => body ? profSection(title, body, sub) : '';
+  const tierRows = (doc.tiers||[]).map(t=>`<tr><td>${tierBadge(t['Performance Level'])}</td><td>${escapeHtml(t['# of Interpreters']||'')}</td><td>${escapeHtml(t['% from Total Workforce']||'')}</td></tr>`).join('');
+  const tt = doc.tiersTotal;
+  const langRows = (doc.languages||[]).map(l=>{ const sc = parseFloat(l['Average QA Score']); return `<tr><td>${escapeHtml(l['Language']||'')}</td><td>${escapeHtml(l['Headcount']||'')}</td><td class="${isNaN(sc)?'':scoreClass(sc)}">${escapeHtml(l['Average QA Score']||'—')}</td></tr>`; }).join('');
+  const lt = doc.languagesTotal;
+  box.innerHTML = `
+    <div class="prof-h" style="margin:2px 2px 10px;font-size:15px;">Overall dashboard — ${escapeHtml(doc.title || monthLabel(ym))}<span class="prof-sub">from the tracker’s “# Overall Dashboard #” tab</span></div>
+    ${sec('Headcount', `<div class="stat-row">${chips(doc.headcount)}</div>`)}
+    ${sec('QAR targets', `<div class="stat-row">${chips(doc.overall)}</div>`)}
+    ${sec('QAR stats MTD — Internal (tracker)', `<div class="stat-row">${chips(doc.internal)}</div>`)}
+    ${sec('QAR stats MTD — Sisense', `<div class="stat-row">${chips(doc.sisense)}</div>`)}
+    ${sec('Coaching', `<div class="stat-row">${chips(doc.coaching)}</div>`)}
+    ${tierRows ? sec('Performance tiers — headcount distribution', `<table class="month-summary"><thead><tr><th>Performance level</th><th># of interpreters</th><th>% of workforce</th></tr></thead><tbody>${tierRows}${tt?`<tr><td><b>Total</b></td><td><b>${escapeHtml(tt['# of Interpreters']||'')}</b></td><td></td></tr>`:''}</tbody></table>`) : ''}
+    ${langRows ? sec('QA scores per language', `<table class="month-summary"><thead><tr><th>Language</th><th>Headcount</th><th>Average QA score</th></tr></thead><tbody>${langRows}${lt?`<tr><td><b>Total</b></td><td><b>${escapeHtml(lt['Headcount']||'')}</b></td><td><b>${escapeHtml(lt['Average QA Score']||'')}</b></td></tr>`:''}</tbody></table>`) : ''}
+    <div style="height:10px;"></div>
+    <div class="prof-h" style="margin:6px 2px 10px;font-size:15px;">Attendance</div>`;
+}
+
 async function renderOverview(main){
   main.innerHTML = `
     <div class="page-head">
@@ -1877,6 +1905,7 @@ async function renderOverview(main){
       <button class="btn btn-sm ${viewFilter==='mine'?'btn-primary':''}" data-filter="mine">My team</button>
       <button class="btn btn-sm ${viewFilter==='all'?'btn-primary':''}" data-filter="all">All teams</button>
     </div>
+    <div id="overallDashboard"></div>
     <div id="overviewBody"><div class="spinner-line">Loading month…</div></div>
   `;
   document.getElementById('monthPick').addEventListener('change', e=>{ currentMonth = e.target.value; refresh(); });
@@ -1885,6 +1914,7 @@ async function renderOverview(main){
     btn.addEventListener('click', ()=>{ viewFilter = btn.dataset.filter; refresh(); });
   });
 
+  renderOverallDashboard();   // fills #overallDashboard from the sheet's '# Overall Dashboard #' tab (async, independent of attendance)
   await ensureMonthLoaded(currentMonth);
 
   const n = daysInMonth(currentMonth);
@@ -2775,6 +2805,30 @@ function monthsBack(ym, n){
   return out;
 }
 function monthLabel(ym){ const [y,m] = ym.split('-').map(Number); return new Date(y, m-1, 1).toLocaleString('en-US', { month:'short', year:'numeric' }); }
+// App-side QAR counts: every QAR row from the form tab + Sisense tab, de-duplicated by QAR id (so a sheet formula that misses a name can't hide a QAR).
+async function loadQarIndex(ym){
+  const [f, sv] = await Promise.all([loadProfileDoc('pqf', ym), loadProfileDoc('pqs', ym)]);
+  if(!f && !sv) return null;                   // no index synced for this month -> fall back to the sheet's numbers
+  const per = {};
+  const add = (doc, src) => { if(!doc) return; for(const book of Object.values(doc)) for(const [id, list] of Object.entries(book||{})) for(const e of list){ if(e.d && e.d.slice(0,7) !== ym) continue; ((per[id] ||= {})[e.q] ||= {})[src] = e.s; } };
+  add(f, 'f'); add(sv, 's');
+  const out = {};
+  for(const [id, m] of Object.entries(per)){
+    const list = Object.values(m); const sc = list.map(o => o.s ?? o.f).filter(n => n != null);
+    out[id] = { count: list.length, avg: sc.length ? sc.reduce((a,b)=>a+b,0)/sc.length : null };
+  }
+  return out;
+}
+// Merge the sheet's numbers with the app's own count (the app's count wins when the index exists for that month).
+function effStats(s, id, idx){
+  if(!s) return null;
+  const sheetCount = s.qarsInternal ?? s.qarsSisense, sheetAvg = s.avgSisense ?? s.avgInternal;
+  if(!idx) return { count: sheetCount, avg: sheetAvg, needed: s.needed, sheetCount, sheetAvg, own: false };
+  const o = idx[id] || { count: 0, avg: null };
+  const count = Math.max(o.count, 0), avg = o.count ? o.avg : sheetAvg;
+  const needed = s.targetMtd != null ? Math.max(0, s.targetMtd - count) : s.needed;
+  return { count, avg, needed, sheetCount, sheetAvg, own: true };
+}
 const fmtNum = (n, d=2) => (n===null || n===undefined || n==='') ? '—' : Number(n).toFixed(d);
 const fmtInt = n => (n===null || n===undefined || n==='') ? '—' : String(n);
 function tierBadge(t){
@@ -2820,6 +2874,7 @@ async function renderPerfList(main){
   const lm = monthsBack(currentMonth, 3);                        // selected month, then up to 2 earlier
   const statDocs = await Promise.all(lm.map(m=>loadProfileDoc('pstats', m)));
   const csat = await loadProfileDoc('pcsat', currentMonth);
+  const qIdx = await loadQarIndex(currentMonth);
   const stats = statDocs[0];
   const pick = id => { for(let i=0;i<statDocs.length;i++){ const s = statDocs[i] && statDocs[i][id]; if(hasStats(s)) return { s, month: lm[i], old: i > 0 }; } return { s: null, month: null, old: false }; };
   let usedOlder = false;
@@ -2849,13 +2904,15 @@ async function renderPerfList(main){
           ${rows.map(p=>{
             const pk = pick(p.id); const s = pk.s; const c = csat && csat[p.id]; if(pk.old) usedOlder = true;
             const dim = pk.old ? 'opacity:.6;' : ''; const tag = pk.old ? `<div class="interp-role">${monthLabel(pk.month).split(' ')[0]}</div>` : '';
-            const qa = s ? (s.avgSisense ?? s.avgInternal) : null;
+            const ef = s ? effStats(s, p.id, pk.old ? null : qIdx) : null;
+            const qa = ef ? ef.avg : null;
             const cs = s && s.csatMtd != null ? s.csatMtd : (c ? c.final : null);
-            const cur = s ? (s.qarsInternal ?? s.qarsSisense) : null;
+            const cur = ef ? ef.count : null;
+            const sheetNote = ef && ef.own && ef.sheetCount !== ef.count ? ` title="Sheet formula says ${ef.sheetCount ?? '—'}"` : '';
             return `<tr class="prof-row" data-open-profile="${p.id}" style="cursor:pointer;">
               <td><div class="interp-name">${escapeHtml(p.name)}</div><div class="interp-role">${escapeHtml(p.language||'')} · ${escapeHtml(managerName(p.managerId))}</div></td>
               <td style="${dim}">${s ? tierBadge(s.tier) : '—'}${tag}</td>
-              <td style="${dim}">${s ? `${fmtInt(cur)} / ${fmtInt(s.eomTarget)}${s.needed ? `<div class="interp-role">${s.needed} more to MTD</div>` : ''}` : '—'}</td>
+              <td style="${dim}"${sheetNote}>${s ? `${fmtInt(cur)} / ${fmtInt(s.eomTarget)}${ef.needed ? `<div class="interp-role">${ef.needed} more to MTD</div>` : ''}` : '—'}</td>
               <td class="${scoreClass(qa)}" style="${dim}">${fmtNum(qa)}</td>
               <td style="${dim}">${fmtNum(cs)}</td>
               <td style="${dim}">${s && s.coachPending ? `<span class="prof-tag prof-tag-coaching">${s.coachPending}</span>` : (s ? '0' : '—')}</td>
@@ -2884,6 +2941,7 @@ async function renderPerfProfile(main){
     loadProfileDoc('pcoach', currentMonth), loadProfileDoc('pplans', currentMonth), loadProfileDoc('peq', currentMonth),
     loadProfileDoc('pcal', currentMonth), loadProfileDoc('pcompl', '')
   ]);
+  const qIdx = await loadQarIndex(currentMonth);
   await ensureViolationsLoadedFor([p.id]);
   await ensureMonthLoaded(currentMonth);
 
@@ -2930,7 +2988,8 @@ async function renderPerfProfile(main){
   const compl = perfShowAllComplaints ? allCompl : allCompl.filter(c=>(c.received||'').slice(0,7)===currentMonth);
 
   const d = cur || {};
-  const pct = d.eomTarget ? Math.min(100, Math.round(((d.qarsInternal ?? d.qarsSisense ?? 0) / d.eomTarget) * 100)) : 0;
+  const ef = cur ? effStats(cur, p.id, curMonth === currentMonth ? qIdx : null) : null;
+  const pct = d.eomTarget ? Math.min(100, Math.round(((ef ? ef.count : 0) ?? 0) / d.eomTarget * 100)) : 0;
   const field = (k, v) => `<div class="prof-f"><div class="k">${k}</div><div class="v">${v ? v : '—'}</div></div>`;
 
   main.innerHTML = `
@@ -2962,9 +3021,9 @@ async function renderPerfProfile(main){
       <div class="stat-row">
         ${profChip('EOM target', fmtInt(d.eomTarget))}
         ${profChip('Target MTD', fmtInt(d.targetMtd))}
-        ${profChip('Current QARs', fmtInt(d.qarsInternal ?? d.qarsSisense))}
-        ${profChip('Needed to MTD target', fmtInt(d.needed))}
-        ${profChip('Avg QA score', fmtNum(d.avgSisense ?? d.avgInternal), scoreClass(d.avgSisense ?? d.avgInternal))}
+        ${profChip('Current QARs', fmtInt(ef && ef.count))}
+        ${profChip('Needed to MTD target', fmtInt(ef && ef.needed))}
+        ${profChip('Avg QA score', fmtNum(ef && ef.avg), scoreClass(ef && ef.avg))}
         ${profChip('Current CSAT', fmtNum(d.csatMtd))}
       </div>
       ${d.eomTarget ? `<div class="prof-bar"><div style="width:${pct}%;"></div></div><div class="interp-role">${pct}% of end-of-month target · weekly target ${fmtInt(d.weeklyTarget)}${d.lastQarDate ? ' · last QAR '+d.lastQarDate : ''}</div>` : ''}
@@ -4321,9 +4380,9 @@ function handleKvStoreChange(payload){
     if(currentView === 'today' || currentView === 'overview') requestRealtimeRefresh();
     return;
   }
-  if(/^(pstats|pcsat|pcoach|pplans|peq|pcal):/.test(key) || key === 'pcompl'){
+  if(/^(pstats|pcsat|pcoach|pplans|peq|pcal|pqf|pqs|pdash):/.test(key) || key === 'pcompl'){
     profileCache[key] = deleted ? null : (payload.new.value || null);
-    if(currentView === 'performance') requestRealtimeRefresh();
+    if(currentView === 'performance' || (currentView === 'overview' && /^(pdash|pstats):/.test(key))) requestRealtimeRefresh();
     return;
   }
   if(key.startsWith('violations:')){
