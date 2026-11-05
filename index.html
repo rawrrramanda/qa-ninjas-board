@@ -1894,21 +1894,20 @@ async function renderOverallDashboard(){
   const rows = (obj, only) => Object.entries(obj||{}).filter(([k])=>!only || only.includes(k)).map(([k,v])=>`<div class="od-row"><span>${escapeHtml(k)}</span><b>${val(v)}</b></div>`).join('');
   const card = (title, body, sub) => body ? `<div class="od-card"><div class="od-h">${escapeHtml(title)}${sub?`<span>${escapeHtml(sub)}</span>`:''}</div>${body}</div>` : '';
   const I = Object.assign({}, doc.internal), S2 = doc.sisense || {}, H = doc.headcount || {}, O = Object.assign({}, doc.overall), C = doc.coaching || {};
-  // Crosscheck: the app's own QAR count (from the QAR rows) wins over the tracker's formulas; the sheet's figure is kept for the tooltip.
+  // QAR totals follow the tracker's Teams & Shifts tab (fallback: QAR form rows); the dashboard tab's own figure is kept for the tooltip.
   const sheetVals = {};
   const qIdx = await loadQarIndex(ym);
-  if(qIdx){
-    const ids = Object.keys(qIdx); let total = 0, sum = 0, n = 0;
-    ids.forEach(id=>{ total += qIdx[id].count; sum += qIdx[id].sum; n += qIdx[id].n; });
+  const tmD = await loadProfileDoc('pteam', ym);
+  if((tmD && Object.keys(tmD).length) || qIdx){
     const set = (obj, k, v) => { if(obj[k] !== undefined && String(obj[k]) !== String(v)) sheetVals[k] = obj[k]; obj[k] = String(v); };
-    set(I, 'Total QARs', total); set(I, 'Interpreters Monitored', ids.filter(id=>qIdx[id].count>0).length);
-    if(n) set(I, 'Overall Average Score', (sum/n).toFixed(2));
-    const stats = await loadProfileDoc('pstats', ym);
-    if(stats){
-      let needed = 0, any = false;
-      Object.entries(stats).forEach(([id, st])=>{ if(st && st.targetMtd != null){ any = true; needed += Math.max(0, st.targetMtd - ((qIdx[id]||{}).count||0)); } });
-      if(any) set(O, 'Needed to meet Individual Targets MTD', needed);
-    }
+    const st0 = await loadProfileDoc('pstats', ym) || {};
+    let total = 0, wsum = 0, needed = 0, monitored = 0;
+    new Set([...Object.keys(tmD||{}), ...Object.keys(qIdx||{})]).forEach(id=>{
+      const e = effStats(st0[id], id, qIdx, tmD); if(!e || e.count == null) return;
+      total += e.count; if(e.count > 0) monitored++; if(e.avg != null) wsum += e.avg * e.count; if(e.needed != null) needed += e.needed;
+    });
+    set(I, 'Total QARs', total); set(I, 'Interpreters Monitored', monitored); if(total) set(I, 'Overall Average Score', (wsum/total).toFixed(2));
+    set(O, 'Needed to meet Individual Targets MTD', needed);
   }
   const tip = k => sheetVals[k] !== undefined ? ` title="Tracker sheet says ${escapeAttr(sheetVals[k])}"` : '';
   const qarsDone = num(I['Total QARs']), qarsTarget = num(O['QARs Target MTD']), eom = num(O['EOM Required Target']);
@@ -2858,29 +2857,38 @@ function monthsBack(ym, n){
   return out;
 }
 function monthLabel(ym){ const [y,m] = ym.split('-').map(Number); return new Date(y, m-1, 1).toLocaleString('en-US', { month:'short', year:'numeric' }); }
-// App-side QAR counts: every QAR row from the form tab + Sisense tab, de-duplicated by QAR id (so a sheet formula that misses a name can't hide a QAR).
+// Fallback QAR counts: the internal QAR form sheet ("QARs" tab), counted by QAR id. Violations / coaching tags come from "QARs (Sisense)".
 async function loadQarIndex(ym){
-  const [f, sv] = await Promise.all([loadProfileDoc('pqf', ym), loadProfileDoc('pqs', ym)]);
-  if(!f && !sv) return null;                   // no index synced for this month -> fall back to the sheet's numbers
+  const f = await loadProfileDoc('pqf', ym);
+  if(!f) return null;                          // nothing synced for this month yet -> fall back to the sheet's numbers
   const per = {};
-  const add = (doc, src) => { if(!doc) return; for(const book of Object.values(doc)) for(const [id, list] of Object.entries(book||{})) for(const e of list){ if(e.d && e.d.slice(0,7) !== ym) continue; ((per[id] ||= {})[e.q] ||= {})[src] = e.s; } };
-  add(f, 'f'); add(sv, 's');
+  for(const book of Object.values(f)) for(const [id, list] of Object.entries(book||{})) for(const e of list){ if(e.d && e.d.slice(0,7) !== ym) continue; (per[id] ||= {})[e.q] = e.s; }
   const out = {};
   for(const [id, m] of Object.entries(per)){
-    const list = Object.values(m); const sc = list.map(o => o.s ?? o.f).filter(n => n != null);
-    const sum = sc.reduce((a,b)=>a+b,0); out[id] = { count: list.length, avg: sc.length ? sum/sc.length : null, sum, n: sc.length };
+    const sc = Object.values(m).filter(n => n != null); const sum = sc.reduce((a,b)=>a+b,0);
+    out[id] = { count: Object.keys(m).length, avg: sc.length ? sum/sc.length : null, sum, n: sc.length };
   }
   return out;
 }
-// Merge the sheet's numbers with the app's own count (the app's count wins when the index exists for that month).
-function effStats(s, id, idx){
-  if(!s) return null;
-  const sheetCount = s.qarsInternal ?? s.qarsSisense, sheetAvg = s.avgSisense ?? s.avgInternal;
-  if(!idx) return { count: sheetCount, avg: sheetAvg, needed: s.needed, sheetCount, sheetAvg, own: false };
-  const o = idx[id] || { count: 0, avg: null };
-  const count = Math.max(o.count, 0), avg = o.count ? o.avg : sheetAvg;
-  const needed = s.targetMtd != null ? Math.max(0, s.targetMtd - count) : s.needed;
-  return { count, avg, needed, sheetCount, sheetAvg, own: true };
+// QARs / avg score / needed-to-MTD: the tracker's "Teams & Shifts" tab is crosschecked against the QAR form rows the app counts itself.
+// When both exist and disagree (e.g. a name not registered in one of them) the higher count wins, because a QAR can't un-happen; the row is flagged.
+// Fallback when neither exists for someone: "- Data & Stats -".
+function effStats(s, id, idx, tm){
+  const t = tm && tm[id] && tm[id].qars != null ? tm[id] : null;
+  const o = idx ? (idx[id] || { count: 0, avg: null }) : null;
+  if(!s && !t && !(o && o.count)) return null;
+  s = s || {};
+  const sheetCount = s.qarsInternal ?? s.qarsSisense, sheetAvg = s.avgInternal ?? s.avgSisense;
+  const target = (t && t.targetMtd) ?? s.targetMtd;
+  let count, avg, src, mismatch = null;
+  if(t && o){
+    if(o.count > t.qars){ count = o.count; avg = o.avg ?? t.avg; src = 'rows'; } else { count = t.qars; avg = t.avg ?? o.avg; src = 'teams'; }
+    if(o.count !== t.qars) mismatch = `Teams & Shifts says ${t.qars}, QAR tab says ${o.count} — showing the higher`;
+  } else if(t){ count = t.qars; avg = t.avg ?? sheetAvg; src = 'teams'; }
+  else if(o){ count = o.count; avg = o.count ? o.avg : sheetAvg; src = 'rows'; if(tm && Object.keys(tm).length && o.count) mismatch = `Not in Teams & Shifts — counted from the QAR tab (${o.count})`; }
+  else { count = sheetCount; avg = sheetAvg; src = 'stats'; }
+  const needed = target != null && count != null ? Math.max(0, target - count) : (t ? t.needed : s.needed);
+  return { count, avg, needed, sheetCount, sheetAvg, own: src !== 'stats', src, mismatch };
 }
 const fmtNum = (n, d=2) => (n===null || n===undefined || n==='') ? '—' : Number(n).toFixed(d);
 const fmtInt = n => (n===null || n===undefined || n==='') ? '—' : String(n);
@@ -2928,6 +2936,7 @@ async function renderPerfList(main){
   const statDocs = await Promise.all(lm.map(m=>loadProfileDoc('pstats', m)));
   const csat = await loadProfileDoc('pcsat', currentMonth);
   const qIdx = await loadQarIndex(currentMonth);
+  const tmDoc = await loadProfileDoc('pteam', currentMonth);
   const stats = statDocs[0];
   const pick = id => { for(let i=0;i<statDocs.length;i++){ const s = statDocs[i] && statDocs[i][id]; if(hasStats(s)) return { s, month: lm[i], old: i > 0 }; } return { s: null, month: null, old: false }; };
   let usedOlder = false;
@@ -2957,15 +2966,16 @@ async function renderPerfList(main){
           ${rows.map(p=>{
             const pk = pick(p.id); const s = pk.s; const c = csat && csat[p.id]; if(pk.old) usedOlder = true;
             const dim = pk.old ? 'opacity:.6;' : ''; const tag = pk.old ? `<div class="interp-role">${monthLabel(pk.month).split(' ')[0]}</div>` : '';
-            const ef = s ? effStats(s, p.id, pk.old ? null : qIdx) : null;
+            const ef = s ? effStats(s, p.id, pk.old ? null : qIdx, pk.old ? null : tmDoc) : null;
             const qa = ef ? ef.avg : null;
             const cs = s && s.csatMtd != null ? s.csatMtd : (c ? c.final : null);
             const cur = ef ? ef.count : null;
-            const sheetNote = ef && ef.own && ef.sheetCount !== ef.count ? ` title="Sheet formula says ${ef.sheetCount ?? '—'}"` : '';
+            const sheetNote = ef && ef.mismatch ? ` title="${escapeAttr(ef.mismatch)}"` : '';
+            const warn = ef && ef.mismatch ? ' <span class="od-note">⚠</span>' : '';
             return `<tr class="prof-row" data-open-profile="${p.id}" style="cursor:pointer;">
               <td><div class="interp-name">${escapeHtml(p.name)}</div><div class="interp-role">${escapeHtml(p.language||'')} · ${escapeHtml(managerName(p.managerId))}</div></td>
               <td style="${dim}">${s ? tierBadge(s.tier) : '—'}${tag}</td>
-              <td style="${dim}"${sheetNote}>${s ? `${fmtInt(cur)} / ${fmtInt(s.eomTarget)}${ef.needed ? `<div class="interp-role">${ef.needed} more to MTD</div>` : ''}` : '—'}</td>
+              <td style="${dim}"${sheetNote}>${s ? `${fmtInt(cur)} / ${fmtInt(s.eomTarget)}${warn}${ef.needed ? `<div class="interp-role">${ef.needed} more to MTD</div>` : ''}` : '—'}</td>
               <td class="${scoreClass(qa)}" style="${dim}">${fmtNum(qa)}</td>
               <td style="${dim}">${fmtNum(cs)}</td>
               <td style="${dim}">${s && s.coachPending ? `<span class="prof-tag prof-tag-coaching">${s.coachPending}</span>` : (s ? '0' : '—')}</td>
@@ -2999,6 +3009,7 @@ async function renderPerfProfile(main){
     loadProfileDoc('pcal', currentMonth), loadProfileDoc('pcompl', '')
   ]);
   const qIdxs = await Promise.all(hist.map(m=>loadQarIndex(m)));
+  const tmDocs = await Promise.all(hist.map(m=>loadProfileDoc('pteam', m)));
   const qIdx = qIdxs[0];
   await ensureViolationsLoadedFor([p.id]);
   await ensureMonthLoaded(currentMonth);
@@ -3046,7 +3057,7 @@ async function renderPerfProfile(main){
   const compl = perfShowAllComplaints ? allCompl : allCompl.filter(c=>(c.received||'').slice(0,7)===currentMonth);
 
   const d = cur || {};
-  const ef = cur ? effStats(cur, p.id, curMonth === currentMonth ? qIdx : null) : null;
+  const ef = cur ? effStats(cur, p.id, curMonth === currentMonth ? qIdx : null, curMonth === currentMonth ? tmDocs[0] : null) : null;
   const pct = d.eomTarget ? Math.min(100, Math.round(((ef ? ef.count : 0) ?? 0) / d.eomTarget * 100)) : 0;
   const field = (k, v) => `<div class="prof-f"><div class="k">${k}</div><div class="v">${v ? v : '—'}</div></div>`;
 
@@ -3084,12 +3095,13 @@ async function renderPerfProfile(main){
         ${profChip('Avg QA score', fmtNum(ef && ef.avg), scoreClass(ef && ef.avg))}
         ${profChip('Current CSAT', fmtNum(d.csatMtd))}
       </div>
+      ${ef && ef.mismatch ? `<div class="interp-role" style="color:var(--accent);margin-bottom:6px;">⚠ ${escapeHtml(ef.mismatch)}</div>` : ''}
       ${d.eomTarget ? `<div class="prof-bar"><div style="width:${pct}%;"></div></div><div class="interp-role">${pct}% of end-of-month target · weekly target ${fmtInt(d.weeklyTarget)}${d.lastQarDate ? ' · last QAR '+d.lastQarDate : ''}</div>` : ''}
     `, curMonth === currentMonth ? monthLabel(currentMonth) : `${monthLabel(curMonth)} (latest with data)`)}
 
     ${profSection('Performance tier history', `
       <table class="prof-list"><thead><tr><th>Month</th><th>Tier</th><th>EOM target</th><th>QARs</th><th>Avg QA</th><th>CSAT</th></tr></thead><tbody>
-        ${hist.map((m,i)=>{ const s = S[i]; const e = s ? effStats(s, p.id, qIdxs[i]) : null; return `<tr><td>${monthLabel(m)}</td><td>${s ? tierBadge(s.tier) : '—'}</td><td>${s ? fmtInt(s.eomTarget) : '—'}</td><td>${e ? fmtInt(e.count) : '—'}</td><td class="${scoreClass(e && e.avg)}">${e ? fmtNum(e.avg) : '—'}</td><td>${s ? fmtNum(s.csatMtd) : '—'}</td></tr>`; }).join('')}
+        ${hist.map((m,i)=>{ const s = S[i]; const e = s ? effStats(s, p.id, qIdxs[i], tmDocs[i]) : null; return `<tr><td>${monthLabel(m)}</td><td>${s ? tierBadge(s.tier) : '—'}</td><td>${s ? fmtInt(s.eomTarget) : '—'}</td><td>${e ? fmtInt(e.count) : '—'}</td><td class="${scoreClass(e && e.avg)}">${e ? fmtNum(e.avg) : '—'}</td><td>${s ? fmtNum(s.csatMtd) : '—'}</td></tr>`; }).join('')}
       </tbody></table>`, 'last 6 months')}
 
     ${profSection('CSAT', `
@@ -4438,7 +4450,7 @@ function handleKvStoreChange(payload){
     if(currentView === 'today' || currentView === 'overview') requestRealtimeRefresh();
     return;
   }
-  if(/^(pstats|pcsat|pcoach|pplans|peq|pcal|pqf|pqs|pdash):/.test(key) || key === 'pcompl'){
+  if(/^(pstats|pcsat|pcoach|pplans|peq|pcal|pqf|pqs|pdash|pteam):/.test(key) || key === 'pcompl'){
     profileCache[key] = deleted ? null : (payload.new.value || null);
     if(currentView === 'performance' || (currentView === 'overview' && /^(pdash|pstats):/.test(key))) requestRealtimeRefresh();
     return;
